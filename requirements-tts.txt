@@ -1,0 +1,2 @@
+# Optional speech playback dependency for the Python 3.9 desktop app.
+pygame==2.6.1

@@ -1,0 +1,4 @@
+Built-in image_gen edit; transparent_background=true.
+Input: user-supplied 03360b87d9aa5f1b0aee2a50a1b740e2.jpg.
+Final prompt:
+Use case: background-extraction and monochrome line-art conversion. Edit the supplied cartoon image into a clean black-ink receipt illustration. Preserve this exact character's recognizable half-lidded eyes, pupils, sly curved smile, face angle and hair/hat outlines as shown. Only the character; remove all blue/gray environmental background and all colors. Use black outlines and black pupils only, with transparent unfilled interiors rather than colored or gray fills, no shadows, no gradients, no paper or rectangular border. Keep the original close-up expression and crop, don't invent a body. Small transparent margin around the character drawing. Crisp antialiased strokes legible when printed small on a receipt. Output real RGBA transparency.

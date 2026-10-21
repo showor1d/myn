@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\Program Files\\Python39\\python.exe",
+            "args": ["D:\\MYN\\tools\\dev_finish.py"],
+            "timeout": 90,
+            "statusMessage": "Syncing development usage and notifying MYN…"
+          }
+        ]
+      }
+    ]
+  }
+}

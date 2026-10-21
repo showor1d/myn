@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MYN</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="usage_receipt.css">
+<link rel="stylesheet" href="media_player.css">
+</head>
+<body>
+<!-- Transparent desktop window: animated neural core and UI only.
+     Legacy background nodes stay hidden for protocol compatibility. -->
+<div id="plate"></div>
+<video id="bgvideo" muted loop playsinline preload="auto" hidden></video>
+<div id="drag" class="pywebview-drag-region"></div>
+<canvas id="scene"></canvas>
+
+<div id="controls">
+  <button id="minimize" class="ctl" title="Minimize" aria-label="Minimize">
+    <svg viewBox="0 0 24 24"><path d="M6 12.5h12"/></svg>
+  </button>
+  <button id="close" class="ctl" title="Close" aria-label="Close">
+    <svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg>
+  </button>
+</div>
+
+
+<div id="voice"></div>
+<section id="agenda-display" hidden aria-label="Calendar"></section>
+<section id="timer-hud" hidden aria-label="Active timers"></section>
+<div id="chat"></div>
+<div id="hint" hidden>Scroll down for the latest</div>
+
+<!-- Long replies: a solid panel beside the core, to read, draw on, and circle text for MYN. -->
+<section id="reader" hidden aria-label="Full text">
+  <header id="reader-bar">
+    <div class="tools" id="reader-tools">
+      <button data-tool="read" class="on" title="Read: scroll and select text">
+        <svg viewBox="0 0 24 24"><path d="M6 4.5l11 7.2-5.1 1.1 2.9 5.6-2.2 1.1-2.9-5.6L6 17.2z"/></svg></button>
+      <button data-tool="pen" title="Pen">
+        <svg viewBox="0 0 24 24"><path d="M4.5 19.5l1-4.2L15.6 5.2a1.9 1.9 0 0 1 2.7 0l.5.5a1.9 1.9 0 0 1 0 2.7L8.7 18.5z"/><path d="M13.8 7l3.2 3.2"/></svg></button>
+      <button data-tool="marker" title="Highlighter">
+        <svg viewBox="0 0 24 24"><path d="M9 15.5l-2.8 2.8H3.5v-1.2l3-3"/><path d="M6.6 13.2l7.8-7.8 4.2 4.2-7.8 7.8z"/><path d="M12 20.5h8.5"/></svg></button>
+      <button data-tool="lasso" title="Circle text for MYN">
+        <svg viewBox="0 0 24 24"><ellipse cx="12" cy="10.5" rx="8" ry="5.5" stroke-dasharray="2.6 2.4"/><path d="M8.5 15.3c-.9 1.4-.6 3.6 1.6 4.2"/></svg></button>
+      <button data-tool="eraser" title="Eraser: remove a stroke">
+        <svg viewBox="0 0 24 24"><path d="M9.5 19.5h10"/><path d="M4.8 14.6l8.6-8.6a1.8 1.8 0 0 1 2.5 0l3 3a1.8 1.8 0 0 1 0 2.5l-6.6 6.6a2.4 2.4 0 0 1-1.7.7H9.3a2.4 2.4 0 0 1-1.7-.7l-2.8-2.8a1.8 1.8 0 0 1 0-.7z"/></svg></button>
+      <span class="swatches" id="reader-colors">
+        <button data-color="#7fe3f5" class="on" title="Cyan"></button><button data-color="#ffd166" title="Yellow"></button><button data-color="#ff8a8a" title="Red"></button>
+      </span>
+      <span class="sep"></span>
+      <button id="reader-undo" title="Undo stroke">
+        <svg viewBox="0 0 24 24"><path d="M9 7.5L4.5 12 9 16.5"/><path d="M5 12h9.5a5 5 0 0 1 0 10H12"/></svg></button>
+      <button id="reader-clear" title="Clear all strokes">
+        <svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 12.5h8L17 7"/></svg></button>
+    </div>
+    <button id="reader-close" title="Collapse (Esc)">
+      <svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg></button>
+  </header>
+  <div id="reader-scroll"><div id="reader-page"><article id="reader-body"></article><canvas id="ink"></canvas></div></div>
+  <div id="ask" hidden>
+    <div id="ask-quote"></div>
+    <div id="ask-chips">
+      <button>Explain</button><button>Translate</button><button>Summarize</button><button>Simplify</button><button>Expand</button>
+    </div>
+    <form id="ask-form" autocomplete="off">
+      <input id="ask-entry" type="text" spellcheck="false" placeholder="What should I do with this passage? You can also say it aloud">
+      <button type="submit">Send</button>
+      <button type="button" id="ask-cancel" title="Dismiss">Cancel</button>
+    </form>
+  </div>
+</section>
+
+<!-- Settings drawn in the page itself (2026-10-17: "Keep floating panels inside the main window").
+     MYN sends a description of the panel; the page draws it and reports what you do. -->
+<section id="sheet" hidden aria-modal="true">
+  <div id="expenses-drag" class="pywebview-drag-region" aria-hidden="true"></div>
+  <header id="sheet-head">
+    <button id="expenses-core-slot" title="Back to main view" aria-label="Back to main view"></button>
+    <span id="sheet-title"></span>
+    <button id="sheet-close" title="Close（Esc）"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg></button>
+  </header>
+  <div id="sheet-body"></div>
+  <div id="sheet-toast" hidden></div>
+  <div id="sheet-modal" hidden><div id="sheet-modal-box"></div></div>
+</section>
+
+<form id="bar" hidden autocomplete="off">
+  <input id="entry" type="text" spellcheck="false" placeholder="Say something to MYN…">
+  <button id="pic" type="button" title="Attach an image for MYN (or paste it)" aria-label="Attach image">
+    <svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="M4.5 17.5l5-5 3.5 3.5 2.5-2.5 4 4"/></svg>
+    <span id="pic-count" hidden></span>
+  </button>
+  <button id="mic" type="button" title="Hold to talk" aria-label="Hold to talk">
+    <svg viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5"/></svg>
+  </button>
+  <button id="send" type="submit">Send</button>
+</form>
+
+<div id="fps" hidden></div>
+<script src="timer_hud.js"></script>
+<script src="agenda_display.js"></script>
+<script src="usage_receipt.js"></script>
+<script src="music_queue.js"></script>
+<script src="audio_effects.js"></script>
+<script src="audio_console.js"></script>
+<script src="media_player.js"></script>
+<script src="core_audio_ring.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

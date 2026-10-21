@@ -1,0 +1,2 @@
+# Complete portable backups (Python 3.9+); AES-256-GCM and PBKDF2-SHA256.
+cryptography==46.0.3
