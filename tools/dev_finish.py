@@ -11,6 +11,9 @@ task reopen MYN and have it say "Task completed / Changes completed".
    close normally and started again. MYN not running: it is started.
 
 Reads Claude Code's hook input (JSON on stdin) for the transcript; never fails the hook.
+Developers use self_update.prepare for disposable work and provide cleanup_workdir,
+cleanup_backup and optional cleanup_artifacts in this JSON after verified deployment.
+The registered copy is retired by MYN only after its next healthy startup.
 """
 
 import json
@@ -26,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "src" / "core")]
 STATE = ROOT / "self-update" / "dev-state.json"
 DONE = ROOT / "self-update" / "dev-done.json"
-PYTHONW = Path(r"C:\Program Files\Python39\pythonw.exe")
+PYTHONW = Path(sys.executable).with_name('pythonw.exe')
 GUI = ROOT / "src" / "myn_gui.py"
 WATCHED = ("src", "tests")
 SKIP_PARTS = {"__pycache__", ".pytest_cache"}
@@ -132,6 +135,21 @@ def read_hook(stream):
     return hook if isinstance(hook, dict) else {}
 
 
+def register_cleanup(hook):
+    """Explicit developer handoff; only self_update.prepare copies are accepted."""
+    work, backup = hook.get('cleanup_workdir'), hook.get('cleanup_backup')
+    if not work:
+        return
+    try:
+        import development_cleanup
+        if not isinstance(work, str) or not isinstance(backup, str):
+            raise ValueError('Working copy and verified backup paths are required')
+        ident = development_cleanup.schedule(work, backup, ROOT, hook.get('cleanup_artifacts') or ())
+        log('Temporary-file cleanup registered for confirmed startup: ' + ident)
+    except (OSError, ValueError, TypeError):
+        log('Cleanup registration was not verified; temporary files were preserved.')
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):  # Claude Code reads the output as UTF-8 too
         try:
@@ -142,6 +160,8 @@ def main():
         hook = read_hook(sys.stdin)
     except OSError:
         hook = {}
+
+    register_cleanup(hook)
 
     try:  # 1. count Claude Code's work on MYN
         import claude_code_usage

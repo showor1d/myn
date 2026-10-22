@@ -127,10 +127,29 @@ def add(config, amount, currency, category, description, occurred_at, source_key
     return item
 
 
-def token_rows(config, calls):
+def token_rows(config, calls, detailed=False):
     """Project the existing ledger, without copying/reinserting any billed calls."""
     import expense_rates
     rates = expense_rates.cached_quotes(config)
+    if detailed:
+        import usage_detail
+        rows = []
+        for entry in usage_detail.entries(calls, config):
+            row = dict(category="token", description=entry["model"], occurred_at=entry["when"],
+                       currency="USD", usd=Decimal(str(entry["cost_usd"])) * 100,
+                       tokens=entry["tokens"], calls=entry["calls"], unpriced=not entry["priced"],
+                       estimated=entry["estimated"], detail=usage_detail.description(entry),
+                       usage_category=entry["category"], daily_cost=usage_detail.usd(entry["cost_usd"]) if entry["priced"] else "Unpriced")
+            row["amount_minor"] = row["usd"]
+            try:
+                quote = expense_rates.select_quote(rates, entry["when"][:10])
+                row["fx_rates"] = json.dumps(quote["rates"])
+                for code in ("JPY", "CNY"):
+                    row[code.lower()] = row["usd"] / 100 * Decimal(quote["rates"][code]) / Decimal(quote["rates"]["USD"]) * CURRENCIES[code][1]
+            except (ValueError, KeyError, InvalidOperation):
+                row["jpy"] = row["cny"] = None if row["usd"] else 0
+            rows.append(row)
+        return rows
     groups = {}
     for call in calls:
         day = call.when.date().isoformat()
@@ -198,10 +217,12 @@ def _trend(rows, period, start, category):
 def receipt_rows(chosen, period):
     """Aggregate only the monthly/yearly presentation, preserving ledger entries."""
     if period not in ("month", "year"):
-        return [{"name": r["description"], "cost": money(r["usd"], "USD"),
+        return [{"name": r["description"], "cost": r.get("daily_cost") or money(r["usd"], "USD"),
+                 **({"usage_category": r["usage_category"]} if r.get("usage_category") else {}),
                  "detail": r.get("detail") or datetime.fromisoformat(r["occurred_at"]).strftime("%m-%d") +
                            " · " + r["category"] + " · " + money(r["amount_minor"], r["currency"])}
-                for r in sorted(chosen, key=lambda row: row["usd"], reverse=True)]
+                for r in (sorted(chosen, key=lambda row: (1, row["usage_category"], row["occurred_at"]) if row.get("usage_category") else (0, -row["usd"], ""))
+                          if period == "day" else sorted(chosen, key=lambda row: row["usd"], reverse=True))]
     groups = {}
     for r in chosen:
         key = (r["category"], r["description"])
@@ -256,7 +277,7 @@ def report(config, period="day", offset=0, category=None, now=None):
         end = start + timedelta(days=7)
     all_rows = records(config)
     calls = usage_stats.load_calls(config, tz=TOKYO)
-    all_rows += token_rows(config, calls)
+    all_rows += token_rows(config, calls, detailed=period == "day")
     inside = [r for r in all_rows if start <= datetime.fromisoformat(r["occurred_at"]) < end]
     totals = {c: sum(r["usd"] for r in inside if r["category"] == c) for c in CATEGORIES}
     total = sum(totals.values())
@@ -270,7 +291,7 @@ def report(config, period="day", offset=0, category=None, now=None):
         # Match the receipt's item names; repeated purchases of an item add together.
         items = {}
         for row in chosen:
-            name = row["description"]
+            name = row.get("usage_category", row["description"]) if period == "day" else row["description"]
             items[name] = items.get(name, 0) + row["usd"]
         pie_slices = [{"name": name, "value": float(value/100),
                        "color": CHART_COLORS[int(hashlib.sha256(name.encode("utf-8")).hexdigest()[:8], 16)

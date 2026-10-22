@@ -15,7 +15,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PYTHON = ROOT / "local-agent" / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+from runtime_paths import worker_python, activate
+PYTHON = worker_python('agent')
 WORKER = Path(__file__).with_name("agent_worker.py")
 SETUP_SCRIPT = ROOT / "setup_agent.ps1"
 SETTINGS_NAME = "agent-settings.json"
@@ -78,7 +79,8 @@ def installed(python=PYTHON):
     if not python.is_file():
         return False
     venv = python.parents[1]
-    candidates = [venv / "Lib" / "site-packages" / "claude_agent_sdk"]
+    candidates = [venv / "Lib" / "site-packages" / "claude_agent_sdk",
+                  python.parent / 'Lib' / 'site-packages' / 'claude_agent_sdk']
     candidates += list((venv / "lib").glob("python3*/site-packages/claude_agent_sdk")) if (venv / "lib").is_dir() else []
     return any(path.is_dir() for path in candidates)
 
@@ -102,6 +104,7 @@ class AgentRunner:
         return self.process is not None and self.process.poll() is None
 
     def _start(self, key):
+        activate()
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1", ANTHROPIC_API_KEY=key)
         self.process = subprocess.Popen(
             self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,

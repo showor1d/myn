@@ -19,6 +19,7 @@ import sys
 import threading
 from pathlib import Path
 from media_bridge import MediaBridge
+import app_icon
 
 HERE = Path(__file__).resolve().parent
 PAGE = HERE / "web" / "index.html"
@@ -157,6 +158,7 @@ def serve(window):
 
 def main():
     utf8_pipes()
+    app_icon.identify()
     try:
         import webview
     except Exception as error:
@@ -170,6 +172,7 @@ def main():
         background_color="#040910")
     # before_show runs synchronously on the WinForms UI thread, before Show().
     # loaded then commits the child surface after WebView2 has navigated.
+    window.events.before_show += lambda: app_icon.apply_web(window)
     window.events.before_show += lambda: apply_glass(window)
     window.events.loaded += lambda: apply_glass(window)
     window.events.loaded += lambda: api._attach_media(window)

@@ -1768,6 +1768,7 @@ function toast(text, tone) {
 }
 
 function showModal(spec) {
+  sheetModalBox.classList.remove("read-only-notice");
   sheetModalBox.style.setProperty("--modal-w", (spec.width || 460) + "px");
   sheetModal.style.setProperty("--modal-w", (spec.width || 460) + "px");
   sheetModalBox.textContent = "";
@@ -1780,25 +1781,33 @@ function showModal(spec) {
 
 function showConfirm(cmd) {
   confirmId = cmd.id;
-  sheetModal.style.setProperty("--modal-w", "440px");
+  sheetModalBox.classList.toggle("read-only-notice", !!cmd.notice);
+  sheetModal.style.setProperty("--modal-w", (cmd.width || 440) + "px");
+  sheetModalBox.style.setProperty("--modal-w", (cmd.width || 440) + "px");
   sheetModalBox.textContent = "";
-  if (cmd.title) sheetModalBox.appendChild(el("div", "ui-modal-title", cmd.title));
-  sheetModalBox.appendChild(el("div", "ui-confirm-text", cmd.text));
+  if (cmd.title && !cmd.notice) sheetModalBox.appendChild(el("div", "ui-modal-title", cmd.title));
+  if (cmd.body) sheetModalBox.appendChild(render(cmd.body, sheetModalBox));
+  else sheetModalBox.appendChild(el("div", "ui-confirm-text", cmd.text));
   const row = el("div", "ui-buttons right");
   const no = el("button", "ui-btn", cmd.no || "No"); no.type = "button";
   const yes = el("button", "ui-btn " + (cmd.danger ? "danger" : "primary"), cmd.yes || "Yes"); yes.type = "button";
   const answer = (value) => { sheetModal.hidden = true; const id = confirmId; confirmId = null; emit({ event: "sheet_answer", id, yes: value }); if (cmd.standalone) closeSheet(false); };
   no.addEventListener("click", () => answer(false)); yes.addEventListener("click", () => answer(true));
-  row.append(no, yes); sheetModalBox.appendChild(row);
+  if (!cmd.notice) row.append(no);
+  row.append(yes); sheetModalBox.appendChild(row);
   if (sheet.hidden) {  // asked while no panel is open: a small box of its own
     sheet.classList.remove("usage-sheet", "agents-sheet");
     document.body.classList.remove("expenses-open", "core-sheet-open");
     sheetKey = "__confirm"; sheetTitle.textContent = cmd.title || "MYN";
-    sheet.style.setProperty("--sheet-w", "480px"); sheetBody.textContent = ""; sheetBody.style.minHeight = "120px";
+    sheet.style.setProperty("--sheet-w", (cmd.width || 480) + "px"); sheetBody.textContent = "";
+    sheetBody.style.minHeight = cmd.notice ? "min(660px, calc(100vh - 140px))" : "120px";
     sheet.hidden = false; document.body.classList.add("paneled"); cmd.standalone = true;
   }
   sheetModal.hidden = false;
-  setTimeout(() => no.focus(), 30);  // the safe answer is the default
+  setTimeout(() => {
+    (cmd.notice ? yes : no).focus({preventScroll:true});
+    if (cmd.notice) sheetModalBox.scrollTop = 0;
+  }, 30);
 }
 
 document.getElementById("sheet-close").addEventListener("click", () => {

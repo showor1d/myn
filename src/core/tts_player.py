@@ -1,11 +1,35 @@
 """GUI-thread-only MP3/WAV playback. Synthesis lives in MYNWindow workers."""
 
 import io
+import math
+import struct
+import wave
+from functools import lru_cache
 from collections import deque
 
 from tts import TTSError, PCMChunk
 
 _audio_inventory_ready = False
+
+
+@lru_cache(maxsize=1)
+def wake_chime():
+    """A short, gently enveloped two-note cue, generated locally without TTS."""
+    rate = 24000
+    frames = bytearray()
+    for frequency in (880, 1174):
+        count = int(rate * .09)
+        for index in range(count):
+            envelope = math.sin(math.pi * index / (count - 1)) ** 2
+            sample = int(7200 * envelope * math.sin(2 * math.pi * frequency * index / rate))
+            frames.extend(struct.pack('<h', sample))
+    output = io.BytesIO()
+    with wave.open(output, 'wb') as sound:
+        sound.setnchannels(1)
+        sound.setsampwidth(2)
+        sound.setframerate(rate)
+        sound.writeframes(frames)
+    return output.getvalue()
 
 
 def output_devices():
@@ -35,6 +59,21 @@ class MP3Player:
         self.pcm_rate_state = None
         self.on_start = None
         self.output_device = ""
+        self.cue_channel = None
+
+    def play_wake_chime(self, volume):
+        """Use the selected output without replacing speech, music or queued replies."""
+        self._music()
+        channel = self.mixer.find_channel()
+        if channel is None:
+            raise TTSError('Audio playback channel is temporarily unavailable.')
+        try:
+            sound = self.mixer.Sound(file=io.BytesIO(wake_chime()))
+            channel.set_volume(max(0.0, min(1.0, float(volume))))
+            channel.play(sound)
+            self.cue_channel = channel
+        except Exception as error:
+            raise TTSError('Wake feedback could not be played.') from error
 
     def set_output_device(self, name):
         if not isinstance(name, str) or len(name) > 200 or "\0" in name:
@@ -228,6 +267,9 @@ class MP3Player:
 
     def close(self):
         global _audio_inventory_ready
+        if self.cue_channel is not None:
+            self.cue_channel.stop()
+            self.cue_channel = None
         self.stop()
         if self.mixer is not None:
             self.mixer.quit()

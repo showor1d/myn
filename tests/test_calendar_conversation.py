@@ -69,7 +69,7 @@ class CalendarConversation(unittest.TestCase):
         self.assertEqual(brief["date"], "2026-10-21")
         token = bedtime.claim(self.config, brief)
         self.assertTrue(interaction.allowed(self.config, token))
-        self.assertFalse(interaction.allowed(self.config, "reply"))
+        self.assertTrue(interaction.allowed(self.config, "reply"))  # direct answers are not muted by sleep
         self.assertFalse(interaction.allowed(self.config, "proactive"))
         self.assertIsNone(bedtime.claim(self.config, brief))
         self.assertIsNone(bedtime.prepare(self.config, revision, datetime(2026, 10, 21, 1, tzinfo=agenda.TOKYO)))

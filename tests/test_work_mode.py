@@ -84,7 +84,7 @@ class RiskyCommands(unittest.TestCase):
 class FakeSdk:
     """Just enough of claude_agent_sdk: the client asks can_use_tool about each command."""
 
-    def __init__(self, commands):
+    def __init__(self, commands, tool="Bash"):
         sdk = self
         self.commands, self.decisions, self.options = commands, [], None
 
@@ -115,7 +115,7 @@ class FakeSdk:
 
             async def receive_response(self):
                 for command in sdk.commands:
-                    decision = await sdk.options.can_use_tool("Bash", {"command": command}, None)
+                    decision = await sdk.options.can_use_tool(tool, {"command": command}, None)
                     sdk.decisions.append(type(decision).__name__)
                 if False:
                     yield None
@@ -123,8 +123,8 @@ class FakeSdk:
 
 
 class WorkerPermissions(unittest.TestCase):
-    def run_task(self, commands, request, answer=False):
-        sdk = FakeSdk(commands)
+    def run_task(self, commands, request, answer=False, tool="Bash"):
+        sdk = FakeSdk(commands, tool=tool)
         emitted = []
 
         async def go():
@@ -138,6 +138,30 @@ class WorkerPermissions(unittest.TestCase):
                 await worker.run(dict({"task_id": "t", "prompt": "p", "cwd": "D:\\work"}, **request))
         asyncio.run(go())
         return sdk, [m for m in emitted if m.get("event") == "ask"]
+
+    def test_windows_test_command_is_allowed_without_approval(self):
+        command = '& "C:\\Program Files\\Python39\\python.exe" -B -m unittest discover -s tests'
+        sdk, asks = self.run_task([command], {"mode": "self_fix"}, tool="PowerShell")
+        self.assertEqual(sdk.decisions, ["Allow"])
+        self.assertEqual(asks, [])
+
+    def test_windows_risk_checks_and_planning_remain_enforced(self):
+        sdk, asks = self.run_task(["Remove-Item src -Recurse"], {}, tool="PowerShell")
+        self.assertEqual(sdk.decisions, ["Deny"])
+        self.assertIn("Deletes files", asks[0]["detail"])
+        sdk, asks = self.run_task(["python -m unittest"], {"mode": "plan"}, tool="PowerShell")
+        self.assertEqual(sdk.decisions, ["Deny"])
+        self.assertEqual(asks, [])
+
+    def test_self_fix_hook_checks_even_autoapproved_commands(self):
+        sdk, _ = self.run_task([], {"mode": "self_fix"})
+        hook = sdk.options.hooks["PreToolUse"][0].hooks[0]
+        for tool in ("Bash", "PowerShell"):
+            for command in ("python -m pip install requests", "uv pip install requests", "Remove-Item src -Recurse"):
+                result = asyncio.run(hook({"tool_name": tool, "tool_input": {"command": command}}, None, None))
+                self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
+            result = asyncio.run(hook({"tool_name": tool, "tool_input": {"command": "python -m unittest"}}, None, None))
+            self.assertTrue(result["continue_"])
 
     def test_ordinary_commands_run_without_asking_risky_ones_ask(self):
         sdk, asks = self.run_task(["python -m unittest", "git status", "rm -rf build"], {})

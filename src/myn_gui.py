@@ -61,6 +61,7 @@ from gui_personal_data import PersonalDataMixin
 from gui_interaction import InteractionMixin
 import interaction
 import evolution
+import app_icon
 
 
 class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, AgendaMixin, SettingsMixin, VoiceMixin, ReaderMixin, AgentMixin,
@@ -86,6 +87,7 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
 
     def __init__(self, root):
         self.root = root
+        app_icon.apply_tk(root)
         self.root.title("")
         self.root.configure(bg="#040910")
         self.font_family = preferred_font_family(root)
@@ -105,7 +107,7 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
         self.session = None
         self.tts_settings = tts.TTSSettings()
         self.tts_player = MP3Player()
-        self.tts_player.on_start = lambda: self._reply_stage("first_audio")
+        self.tts_player.on_start = self._speech_playback_started
         self.tts_request_id = 0
         self.speech_links = 0
         self.reply_links = {}
@@ -285,6 +287,7 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
             root.after(800, self._greet_aloud)
             self._self_update_startup()
             self._dev_startup()
+            self._cleanup_startup()
             self._evolution_boot()
             self._reports_boot()
             self._personal_data_boot()
@@ -419,11 +422,14 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
                 self.events.put(("tts_error", request_id, 'Speech generation failed; the text reply is preserved.'))
                 return
 
-    def _finish_stream_speech(self):
-        """True if this reply was already being spoken sentence by sentence."""
+    def _finish_stream_speech(self, then=None):
+        """True if this reply was already being spoken sentence by sentence.
+        `then` (the bedtime briefing) is read after the reply's last sentence."""
         if self.speech_queue is None:
             return False
         self._stream_speak(self.speech_stream.finish() if self.speech_stream else [])
+        if then and self.speech_queue is not None:
+            self._stream_speak(tts.speech_segments(tts.speech_text(then)))
         self.speech_queue.put(None)
         self.speech_queue = None
         return True
@@ -458,6 +464,7 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
             self.self_update_state = None
             text = 'The new version is running normally. Self-update is now active.' + (("\n\n" + summary) if summary else "")
             self.append("MYN", text, speakable=True, spoken_text='The new version is running normally. Self-update is now active.')
+            self._evolution_receipts()
 
     def _start_self_fix(self, problem, point_id=None):
         'Self-update on a program copy. point_id identifies the evolution point being built. A tested copy for an adopted point is applied automatically when idle; see gui_evolution.'
@@ -501,7 +508,8 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
                 self._self_fix_discard(fix)
             raise
         self.events.put(("call", lambda: self._agent_started('Self-evolution: ' + problem.split("\n")[0][:80])))
-        return {"started": True, "note": 'After successful implementation and testing, ask the user whether to apply the update.'}
+        return {"started": True, "note": ('The adopted update will be backed up and applied automatically when idle after host verification.'
+                                          if point_id else 'After host verification, ask the user whether to apply the update.')}
 
     def _self_fix_run(self, notes):
         fix = self.self_fix
@@ -534,11 +542,12 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
         self._evolution_changed()
 
     @staticmethod
-    def _self_fix_discard(fix):
-        self_update.discard(fix["work"])
+    def _self_fix_discard(fix, keep_work=False):
+        if not keep_work:
+            self_update.discard(fix["work"])
         shutil.rmtree(str(fix["work"]) + "-data", ignore_errors=True)
 
-    def _self_fix_fail(self, reason):
+    def _self_fix_fail(self, reason, preserve_work=False):
         fix, self.self_fix = self.self_fix, None
         self._agent_log_add("done", 'No changes: ' + reason)
         self.append("MYN", 'Self-update failed: %s\n\nThe running version is unchanged.' % reason, speakable=True,
@@ -546,7 +555,7 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
         if fix:
             if fix.get("point"):
                 self._evolution_build_failed(fix, reason)
-            self._self_fix_discard(fix)
+            self._self_fix_discard(fix, keep_work=preserve_work)
 
     def _self_fix_round_done(self, message):
         fix = self.self_fix
@@ -580,7 +589,9 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
                 self.self_fix = None
                 self._self_fix_discard(fix)
                 return
-        broken = self_update.new_failures(fix["baseline"] or set(), failing)
+        baseline = fix["baseline"] if fix["baseline"] is not None else {'(Tests unavailable)'}
+        broken = self_update.new_failures(baseline, failing)
+        fix["verification"] = self_update.verification_summary(baseline, failing)
         problems = self_update.check(fix["work"]) if not broken else []
         if broken or problems:
             what = ('New test failures: ' + "、".join(broken[:8])) if broken else "；".join(problems)
@@ -628,10 +639,10 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
 
     def _self_fix_applied(self, ok, detail):
         if not ok:
-            self._self_fix_fail(detail)
+            self._self_fix_fail(detail, preserve_work=True)
             return
         fix, self.self_fix = self.self_fix, None
-        self._self_fix_discard(fix)
+        self._self_fix_discard(fix, keep_work=True)
         self.append("MYN", 'New version installed; restarting now. Previous version backup: %s' % detail)
         self.stop_speech()
         self.root.after(1500, self._restart_now)
@@ -651,6 +662,24 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
 
     def _dev_file(self, name):
         return self_update.state_dir(create=False) / name
+
+    def _cleanup_startup(self):
+        """Only registrations present at this boot can retire after healthy startup."""
+        import development_cleanup
+        try:
+            batch = development_cleanup.startup_batch()
+        except (OSError, ValueError):
+            return  # housekeeping must never prevent the main window from opening
+        if not batch:
+            return
+        def run():
+            if self.self_fix is not None or (self.agent_runner is not None and self.agent_runner.busy):
+                self.root.after(60000, run)
+                return
+            def work():
+                development_cleanup.finish_startup(batch)
+            threading.Thread(target=work, daemon=True).start()
+        self.root.after((self_update.CONFIRM_AFTER_S + 1) * 1000, run)
 
     def _dev_startup(self):
         note = None
@@ -759,7 +788,7 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
             # Fixing itself, MYN works only on its copy: anything else is refused without asking.
             self._agent_log_add("ask", '(Self-update rejects operations outside the copy) %s' % (message.get("summary") or ""))
             self.agent_runner.answer(message.get("request_id"), False,
-                                     "Only work inside the copy (the current directory). Commands are not available.")
+                                     "This operation was rejected by self-update policy. Ordinary Bash and PowerShell test commands inside the copy are supported. " + str(message.get("detail") or ""))
         elif kind == "ask":
             label = self.AGENT_TOOLS.get(message.get("tool"), message.get("tool") or 'Action')
             text = 'The background task requests: %s\n\n%s' % (label, message.get("summary") or "")
@@ -829,7 +858,9 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
             elif fixing:
                 purpose = "self_fix"
             usage_stats.record_agent(Path(config) / usage_stats.USAGE_NAME, message.get("model"),
-                                     purpose, message.get("usage"), message.get("cost_usd"), task_key=task_key)
+                                     purpose, message.get("usage"), message.get("cost_usd"), task_key=task_key,
+                                     run_id=message.get("run_id", ""), steps=message.get("usage_steps"),
+                                     calls_complete=message.get("calls_complete", False))
         except Exception:
             pass
 
@@ -878,38 +909,81 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
     greeting_outcome = 'Not due yet'
     quiet_tts_request = None  # a speech request whose failure is not worth an error message
     _greet_waits = 0
+    _greeting_request = None
+    _greeting_audio_started = False
+    _greeting_retries = 0
+    _greeting_text = ""
+    _greeting_purpose = "startup"
+
+    def _greeting_state(self, text, reason):
+        """Keep startup diagnostics without recording speech or service response bodies."""
+        self.greeting_outcome = text
+        import voice_diagnostics
+        voice_diagnostics.record(self._usage_config(), 'startup_greeting', reason=reason)
+
+    def _speech_playback_started(self):
+        self._reply_stage("first_audio")
+        if self._greeting_request == self.tts_request_id and not self._greeting_audio_started:
+            self._greeting_audio_started = True
+            self._greeting_state('Audio playback started', 'playback_started')
+
+    def _start_greeting_audio(self, text, purpose="startup"):
+        self._greeting_text = text
+        self._greeting_purpose = purpose
+        self._greeting_audio_started = False
+        self.speak(text, purpose=purpose)
+        self._greeting_request = self.quiet_tts_request = self.tts_request_id
+        self._greeting_state('Waiting for speech audio', 'requested')
+
+    def _greeting_failed(self, request_id, error):
+        if request_id != self._greeting_request or request_id != self.tts_request_id:
+            return False
+        self._greeting_state('Read-aloud failed: ' + str(error)[:160], 'audio_failed')
+        transient = any(reason in str(error) for reason in ('network request failed', 'temporarily unavailable'))
+        if transient and not self._greeting_audio_started and self._greeting_retries < 1:
+            self._greeting_retries += 1
+            self._greeting_state('Retrying startup speech once', 'retry_scheduled')
+            def retry():
+                if (self.tts_request_id != request_id or self.busy or self._speaking() or
+                        self.reply_silenced or not self.tts_settings.auto_read or
+                        not self._speech_allowed(self._greeting_purpose) or
+                        any(tag == 'you' for tag, _body, _link in self._messages())):
+                    self._greeting_state('Retry skipped: activity or quiet scene changed', 'retry_cancelled')
+                    return
+                self._start_greeting_audio(self._greeting_text, self._greeting_purpose)
+            self.root.after(1500, retry)
+        else:
+            self.append('Error', 'Startup voice could not play. ' + str(error)[:160])
+        return True
 
     def _greet_aloud(self):
         """Say the start-up greeting in English once it can be seen (after the GPU window's
         intro, if that window is coming up)."""
         if self.greeted or not self.greeting:
             return
-        if self.web_intro or (self.web is not None and not self.web_active and self._greet_waits < 50):
+        if (self.web_intro or (self.web is not None and not self.web_active)) and self._greet_waits < 50:
             self._greet_waits += 1
             self.root.after(500, self._greet_aloud)  # wait for the window (intro_done also calls this)
             return
         self.greeted = True
-        if not self._speech_allowed("proactive"):
-            self.greeting_outcome = 'Not spoken: sleeping or studying'
+        if not self._speech_allowed("startup"):
+            self._greeting_state('Not spoken: quiet scene or media playback', 'scene_suppressed')
             self.dev_notice = None
             return
         if self.dev_notice:  # restarted after Claude Code changed MYN: say that instead
             notice, self.dev_notice = self.dev_notice, None
-            self.speak(notice, purpose="proactive")
-            self.quiet_tts_request = self.tts_request_id
-            self.greeting_outcome = 'Spoke the development-completion notice'
-            return
+            if self._speech_allowed("proactive"):
+                self._start_greeting_audio(notice, purpose="proactive")
+                return
         # Only as the opening line: not once you have sent something or MYN is busy talking.
         reason = ('Automatic read-aloud is disabled' if not self.tts_settings.auto_read else
                   'Already speaking or replying' if self._speaking() or self.busy else
                   'Already spoke something else' if self.recent_speech else
                   'You already started a conversation' if any(tag == "you" for tag, _body, _link in self._messages()) else "")
         if reason:
-            self.greeting_outcome = 'Not spoken: ' + reason
+            self._greeting_state('Not spoken: ' + reason, 'opening_superseded')
             return
-        self.speak(GREETINGS_SPOKEN.get(self.greeting, self.greeting), purpose="proactive")
-        self.quiet_tts_request = self.tts_request_id  # no key or offline: no error popup...
-        self.greeting_outcome = 'Read-aloud started'
+        self._start_greeting_audio(GREETINGS_SPOKEN.get(self.greeting, self.greeting))
 
     def _status(self):
         """MYN's own state for the myn_status tool (called from the chat thread; reads only)."""
@@ -1090,7 +1164,8 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
                             self._alarm_audio_result(item[1], "tts_submitted", 'Audio was handed to the player; this does not prove the user heard it')
                         except tts.TTSError as error:
                             self._alarm_audio_result(item[1], "tts_failed", str(error))
-                            self.append('Error', str(error))
+                            if not self._greeting_failed(item[1], error):
+                                self.append('Error', str(error))
                 elif item[0] == "tts_chunk":
                     if item[1] == self.tts_request_id and self._speech_allowed(self.tts_purpose):
                         try:
@@ -1098,17 +1173,16 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
                             self._alarm_audio_result(item[1], "tts_submitted", 'Audio was handed to the player; this does not prove the user heard it')
                         except tts.TTSError as error:
                             self._alarm_audio_result(item[1], "tts_failed", str(error))
-                            self.append('Error', str(error))
+                            if not self._greeting_failed(item[1], error):
+                                self.append('Error', str(error))
                 elif item[0] == "tts_warm_error":
                     if (self.tts_settings.provider == "qwen3-local" and
                             item[1] == tts.local_token()):
                         self.append('Error', item[2])
                 elif item[0] == "tts_error":
                     self._alarm_audio_result(item[1], "tts_failed", item[2])
-                    if item[1] == self.quiet_tts_request and item[1] != self.wake_ack_request:
-                        # ...but MYN still knows why (myn_status)
-                        self.greeting_outcome = 'Read-aloud failed: ' + str(item[2])[:160]
-                    if item[1] == self.tts_request_id and item[1] != self.quiet_tts_request:
+                    handled = self._greeting_failed(item[1], item[2])
+                    if not handled and item[1] == self.tts_request_id and item[1] != self.quiet_tts_request:
                         self.append('Error', item[2])
                 elif item[0] == "silent":
                     self._stay_silent(item[1])
@@ -1117,19 +1191,21 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
                     if item[0] == "answer":
                         self._reply_stage("first_text")
                     bedtime_briefing = item[4] if item[0] == "answer" and len(item) > 4 and not self.reply_silenced else None
+                    bedtime_text = self._claim_bedtime_briefing(bedtime_briefing) if bedtime_briefing else None
                     reply_id = item[3] if item[0] == "answer" and len(item) > 3 else None
                     if item[0] == "answer" and self.reply_silenced:
                         self.stop_speech()  # you interrupted it: shown, not read aloud
                         self.append("MYN", item[1], speakable=True, spoken_text=item[2], reply_id=reply_id)
                     elif item[0] == "answer":
-                        if self._finish_stream_speech():
+                        if self._finish_stream_speech(bedtime_text):
                             self.append("MYN", item[1], speakable=True, spoken_text=item[2], reply_id=reply_id)
                         else:
                             self.stop_speech()
                             self.append("MYN", item[1], speakable=True, spoken_text=item[2], reply_id=reply_id)
                             if self.tts_settings.auto_read:
                                 self.speak(item[2], opening_only=True,
-                                           purpose="scheduled" if self.scheduled_running else "reply")
+                                           purpose="scheduled" if self.scheduled_running else "reply",
+                                           then=bedtime_text)
                     else:
                         self._finish_stream_speech()
                         self.append('Error', item[1])
@@ -1137,6 +1213,9 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
                     self.silence_gate = None
                     self.busy = False
                     self.last_answer_at = time.time()
+                    if getattr(self, '_voice_turn_active', False) and self.conversation_open:
+                        self.conversation_touch = self.last_answer_at
+                    self._voice_turn_active = False
                     self.reply_silenced = False
                     self._finish_interface_speech()
                     self.button.configure(state=tk.NORMAL)
@@ -1147,8 +1226,6 @@ class MYNWindow(ConversationMixin, WebViewMixin, FramelessMixin, TimersMixin, Ag
                     self.root.after(300, self._next_task)
                     self._timers_changed()
                     self._agenda_changed()
-                    if bedtime_briefing and not self.queued_question:
-                        self._speak_bedtime_briefing(bedtime_briefing)
                     if self.queued_question:
                         self._drain_voice()
         except queue.Empty:
@@ -1267,9 +1344,13 @@ def _relaunch():
 
 
 def main():
+    app_icon.identify()
     import portable_backup
     from data_location import personal_root
     portable_backup.recover(personal_root())
+    from first_run import offer
+    if not offer(personal_root()):
+        return
     # A self-update whose new version never came up properly is undone before anything else.
     startup = self_update.on_startup()
     if startup and startup[0] == "rolled_back":

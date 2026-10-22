@@ -9,7 +9,8 @@ _LOCK = threading.Lock()
 
 def record(config, stage, **fields):
     allowed = ("reason", "seconds", "wait_s", "transcribe_s", "language", "chars", "depth",
-               "silence_s", "elapsed_s", "turn")
+               "silence_s", "elapsed_s", "turn", "exact_wake", "acoustic_wake",
+               "streaming_wake", "record_only", "capture_id")
     row = {"at": round(time.time(), 3), "stage": str(stage)[:40]}
     row.update({k: v for k, v in fields.items() if k in allowed and
                 isinstance(v, (str, int, float, bool))})

@@ -17,7 +17,8 @@ from pathlib import Path
 from worker_process import terminate as _terminate
 
 ROOT = Path(__file__).resolve().parents[2]
-PYTHON = ROOT / "local-tts" / ".venv" / "Scripts" / "python.exe"
+from runtime_paths import worker_python
+PYTHON = worker_python('speech')
 MODEL = ROOT / "local-stt" / "whisper-large-v3-turbo"
 WORKER = Path(__file__).with_name("stt_worker.py")
 SETUP_SCRIPT = ROOT / "setup_voice_input.ps1"
@@ -53,7 +54,7 @@ ZH_PROMPT = "以下是普通话的句子，使用简体中文。"
 # (matched with spaces and punctuation removed).
 _HALLUCINATIONS = re.compile(
     r"^(?:谢谢观看|謝謝觀看|谢谢收看|感谢观看|字幕由?amara\.org社区提供|"
-    r"请不吝点赞订阅转发打赏支持明镜与点点栏目|明镜需要您的支持.*|"
+    r"(?:有)?请不吝点赞订阅转发打赏支持明镜与点点栏目|明镜需要您的支持.*|"
     r"thankyouforwatching|thanksforwatching|subtitlesby.*|"
     r"ご視聴ありがとうございました|字幕.*提供)$", re.I)
 
@@ -401,6 +402,17 @@ def is_backchannel(text):
     'A brief listening acknowledgement while MYN speaks is not an interruption.'
     bare = re.sub(r"[\s。，、！？!?,.…\-—~·\"'“”‘’ー]", "", text or "")
     return not bare or bool(_BACKCHANNEL.match(bare))
+
+
+def is_social_fragment(text):
+    """A standalone courtesy is not enough evidence to open a voice conversation.
+
+    Do not remove it from transcripts: explicit wake and push-to-talk remain valid.
+    """
+    bare = re.sub(r"[\W_]+", "", text or "", flags=re.UNICODE).casefold()
+    return bare in {"thankyou", "thanks", "thankyouverymuch", "goodnight", "bye",
+                    "goodbye", "yourewelcome", "谢谢", "谢谢你", "多谢", "晚安", "再见",
+                    "不客气", "ありがとう", "ありがとうございます", "おやすみ", "おやすみなさい"}
 
 
 def is_filler(text):

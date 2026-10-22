@@ -328,7 +328,7 @@ class Expenses(unittest.TestCase):
         usage_stats.add_manual(self.config, NOW, "Claude Code", 100, 3)
         token = expenses.report(self.config, category="token", now=NOW)
         self.assertEqual({s["name"]: s["value"] for s in token["chart_slices"]},
-                         {"Codex": 2, "Claude Code": 3})
+                         {"Other usage": 5})  # manual entries have no declared task category
         panel = ExpensePanel(SimpleNamespace(_usage_config=lambda: self.config))
         host = SheetHost(lambda _: None)
         host.open(panel)
@@ -407,7 +407,9 @@ class Expenses(unittest.TestCase):
             self.assertEqual(token["totals"][1][1], "¥70.00 CNY")
             self.assertEqual(token["totals"][2][1], "¥1,500 JPY")
             self.assertNotIn("估算", json.dumps(token["rows"], ensure_ascii=False))
-            self.assertEqual(len(token["rows"]), 2)
+            self.assertEqual(len(token["rows"]), 11)
+            self.assertEqual(sum(r["name"] == "Codex" for r in token["rows"]), 10)
+            self.assertEqual(len(expenses.report(self.config, "week", category="token", now=NOW)["rows"]), 2)
             self.assertIn("tokens", token["rows"][0]["detail"])
             json.dumps(token)  # page protocol must remain serializable
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.config.iterdir() if p.is_file()})

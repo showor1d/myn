@@ -24,6 +24,8 @@ import web_frontend
 
 # Direct source launch resolves core imports without a packaged executable.
 sys.path.insert(0, str(Path(__file__).resolve().parent / "core"))
+from runtime_paths import activate
+activate()
 # Core module defaults are fixed on import, so set the durable path first.
 os.environ["MYN_CONFIG_DIR"] = str(user_data_dir())
 os.environ["MYN_DATA_DIR"] = str(database_dir())

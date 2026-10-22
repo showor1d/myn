@@ -5,25 +5,25 @@ import interaction
 class InteractionMixin:
     tts_purpose = "reply"
 
-    def _speak_bedtime_briefing(self, briefing):
-        """One narrow sign-off exception; never interrupt an alarm or retry later."""
-        if not self.tts_settings.auto_read or self.queued_question:
-            return
+    def _claim_bedtime_briefing(self, briefing):
+        """Once-only sign-off text, read right after the spoken good-night reply
+        (never cutting it off); never interrupt an alarm or retry later."""
+        if not briefing or not self.tts_settings.auto_read or self.queued_question:
+            return None
         if self.tts_purpose == "alarm" and (self._speaking() or self.speech_queue is not None):
-            return
+            return None
         import bedtime
         try:
             token = bedtime.claim(self._usage_config(), briefing)
         except (OSError, ValueError):
-            return  # Can't persist the once-only guard: do not risk a repeated wake-up.
-        if token:
-            self.speak(briefing["text"], purpose=token)
+            return None  # Can't persist the once-only guard: do not risk a repeated wake-up.
+        return briefing["text"] if token else None
 
     def _speech_allowed(self, purpose="reply"):
         import singing
         if not singing.guard(self._usage_config()).allowed(purpose):
             return False
-        if purpose == "proactive" and getattr(self, "media_playing", False):
+        if purpose in ("proactive", "startup") and getattr(self, "media_playing", False):
             return False  # don't interrupt a song/video with a background proposal or restart
         return interaction.allowed(self._usage_config(), purpose)
 
@@ -34,9 +34,10 @@ class InteractionMixin:
             pass
         if not self._speech_allowed(self.tts_purpose):
             self.stop_speech()
-        if interaction.load(self._usage_config())["mode"] == "sleep":
-            self.conversation_open = False
-            self.awaiting_until = 0
+        mode = interaction.load(self._usage_config())["mode"]
+        if mode == "sleep" and getattr(self, '_voice_scene_mode', None) != 'sleep':
+            self._close_voice_conversation('entered_sleep')
+        self._voice_scene_mode = mode
         self._voice_attention()
 
     def _interaction_notify(self):

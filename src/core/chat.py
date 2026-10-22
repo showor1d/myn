@@ -45,16 +45,21 @@ HELP = (
     'Input: click the keyboard icon left of the core, or ask to open the input bar. Press Esc to collapse it.\n'
     'Agents: click the robot icon left of the core to manage voices, devices and the Claude API key. The main model is fixed to Opus 5.5.\n'
     'Local chat model: none is installed. An optional interface is retained and disabled by default; no fallback runs without explicit configuration.\n'
-    'Voice: always-on microphone and voice input stay enabled. Say Hey, Mine, or hold right Ctrl or the microphone button. '
-    'During a conversation, context determines whether you are addressing MYN. Ask to stop reading at any time. Sleep, study and singing scenes reduce interruptions.\n'
+    'Voice: hands-free chat opens only after a recognized Hey, Mine. Holding right Ctrl or the microphone button sends one deliberate request without opening hands-free chat. '
+    'An exact spoken wake plays a brief local chime through the selected voice output, with no model or synthesis charge. '
+    'Every captured sentence is checked for whether it addresses MYN before any reply or action. A farewell, clear speech to someone else, or 30 seconds without an exchange ends voice chat; say the wake phrase again to resume. '
+    'Uncertain speech receives no reply. Notifications and ringing alarms do not open voice chat. Sleep, study and singing scenes reduce interruptions.\n'
     'Memory and personal data: ask about original messages, memories, your profile, communication preferences or learning history to view them in the main window. '
     'Facts link to original messages; inferences are stored separately. Edits, deletion and restoration require reading the target and confirmation.\n'
     'Quick queries: recent, today, week, month, category <category>, trash. These compatibility commands remain available.\n'
     'Permissions and search: ask to view or request computer permissions, specific folder access or search settings. Permission changes require actual confirmation.\n'
     'Calendar and tasks: ask to manage events, alarms, countdowns, scheduled tasks, background tasks or evolution points, and to view or change task budgets.\n'
-    'Expenses: click the banknote icon left of the core. You can record expenses in chat and ask about token and USD usage.\n'
+    'Expenses: click the banknote icon left of the core. Daily token receipts list separate model calls by task category; weekly, monthly and yearly summaries retain their usual grouping. You can record expenses in chat and ask about token and USD usage.\n'
+    'After an adopted self-improvement finishes, a dismissible cost receipt shows model calls, stage costs and the confirmed restart or failure result. Per-call allocations are marked as estimates.\n'
+    'Update cleanup: after healthy startup, registered temporary development copies and test outputs are removed automatically. Recovery backups and verification records are retained.\n'
     'Media: click the music note or ask to play local music. Music, audio, video and movies share the media library. '
     'Ask to open the music or microphone audio console.\n'
+    'New Windows installation: run MYN Setup, then choose Import full backup in the first-start window. Enter the backup password locally; no API key is needed to restore. Speech output uses ElevenLabs.\n'
     'Backups: ask to export or import a full backup, then use the local file chooser and password dialog. You can also ask for a personal data overview.'
 )
 
@@ -1107,11 +1112,13 @@ class ChatSession:
         if ringing:
             reader = dict(reader or {}, ringing_alarms=ringing)
         reader = self._wake_reader(reader)
+        import singing
+        vocal_before = singing.guard(config).snapshot()
         decision = interaction.classify(config, context, question, recent, reader, self._key(),
                                        addressing={"recent": recent, "heard_elsewhere": aside})
         import conversation_mode
         verdict = conversation_mode.parse_verdict(json.dumps(decision.get("addressing", {})))
-        if self.interaction_notify:
+        if self.interaction_notify and singing.guard(config).snapshot() != vocal_before:
             self.interaction_notify()
         self._notify_wake(reader, decision, question)
         return verdict, {"question": question, "context": context, "reader": reader,

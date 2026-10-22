@@ -220,6 +220,7 @@ class Reporting(unittest.TestCase):
 
     def test_gui_quiet_gate_and_single_brief_invitation(self):
         window=ReportsMixin()
+        window.conversation_open=False
         window._evolution_idle=Mock(return_value=False)
         window._speech_allowed=Mock(return_value=True)
         window.append=Mock(); window.speak=Mock()
@@ -233,7 +234,7 @@ class Reporting(unittest.TestCase):
             window._speech_allowed.return_value=True
             window._report_announce(self.config)
             window.speak.assert_called_once()
-            self.assertTrue(window.conversation_open)
+            self.assertFalse(window.conversation_open)
             self.assertIn('good time to view',window.speak.call_args[0][0])
 
     def test_chat_tool_and_verified_subscription_receipt(self):

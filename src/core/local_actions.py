@@ -1443,6 +1443,7 @@ def _point_view(point):
             "why": point.get("why", ""), "notes": point.get("notes", []),
             "risks": plan.get("risks", ""), "files": plan.get("files", []),
             "cost_note": plan.get("cost_note", ""), "result": point.get("result", ""),
+            "verification": point.get("verification", {}),
             "how_to_use": plan.get("how_to_use", ""), "reason": point.get("reason", ""),
             "said": [q.get("text", "") for q in (point.get("quotes") or [])[:3]]}
 

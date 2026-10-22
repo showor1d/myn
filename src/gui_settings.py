@@ -547,9 +547,7 @@ class SettingsMixin:
         speed = tk.DoubleVar(value=current.speed)
         ttk.Label(frame, text='Speech service').pack(anchor="w")
         ttk.Combobox(frame, textvariable=provider, state="readonly",
-                     values=("elevenlabs", "qwen3-local")).pack(fill=tk.X, pady=(2, 8))
-        ttk.Label(frame, text='Qwen3-TTS 0.6B runs locally and preloads in the background when selected.',
-                  foreground=theme.WARN).pack(anchor="w", pady=(0, 8))
+                     values=("elevenlabs",)).pack(fill=tk.X, pady=(2, 8))
         ttk.Label(frame, text='ElevenLabs voice ID (English and default)').pack(anchor="w", pady=(10, 0))
         ttk.Entry(frame, textvariable=voice_id).pack(fill=tk.X)
         ttk.Label(frame, text='Chinese voice ID (optional; leave blank to use the default voice for all languages)').pack(
@@ -561,9 +559,6 @@ class SettingsMixin:
         ttk.Combobox(model_row, textvariable=eleven_model, state="readonly", width=26,
                      values=[tts.ELEVEN_MODEL_LABELS[code] for code in tts.ELEVEN_MODELS]).pack(
             side=tk.LEFT, padx=(8, 0))
-        ttk.Label(frame, text='Qwen3 local voice').pack(anchor="w", pady=(10, 0))
-        ttk.Combobox(frame, textvariable=local_speaker, state="readonly",
-                     values=tts.LOCAL_SPEAKERS).pack(fill=tk.X)
         ttk.Label(frame, text='ElevenLabs API key (enter only here; saved keys are never displayed)').pack(
             anchor="w", pady=(10, 0))
         key_entry = ttk.Entry(frame, show="*")

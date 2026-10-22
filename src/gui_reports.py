@@ -66,6 +66,5 @@ class ReportsMixin:
         spoken = 'The report on "%s" is ready. Is now a good time to view it?' % report['title'][:45]
         self.append('MYN',spoken,speakable=True,spoken_text=spoken)
         self.speak(spoken,purpose='proactive')
-        self.conversation_open = True
-        self.conversation_touch = self.last_answer_at = time.time()
+        # A notification does not authorize microphone conversation or spoken consent.
         self._evolution_said_at = time.time()

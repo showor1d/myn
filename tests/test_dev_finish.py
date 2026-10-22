@@ -14,11 +14,6 @@ sys.path[:0] = [str(BASE / "src"), str(BASE / "src" / "core")]
 import claude_code_usage
 import usage_stats
 
-if not (BASE / "tools" / "dev_finish.py").is_file():
-    # MYN's self-evolution copy holds only src, tests and AGENTS.md (self_update.PROGRAM);
-    # the developer tool is tested in the full program folder.
-    raise unittest.SkipTest("tools/dev_finish.py is not part of this program copy")
-
 spec = importlib.util.spec_from_file_location("dev_finish", BASE / "tools" / "dev_finish.py")
 dev_finish = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dev_finish)

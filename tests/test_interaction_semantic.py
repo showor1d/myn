@@ -52,9 +52,10 @@ class Semantic(unittest.TestCase):
         seen = []
         with mock.patch.object(claude_client, "send", return_value=json.dumps(verdict("sleep", text))), \
                 mock.patch.object(claude_client, "coordinated_reply", side_effect=lambda *a, **k:
-                                  seen.append(interaction.allowed(self.config)) or "好好休息。"):
+                                  seen.append((interaction.allowed(self.config, "proactive"),
+                                               interaction.allowed(self.config, "reply"))) or "好好休息。"):
             result = self.session.ask(text)
-        self.assertEqual(seen, [False])
+        self.assertEqual(seen, [(False, True)])  # muted for background speech; the good night is spoken
         self.assertEqual(result["answer"], "好好休息。")
         self.assertEqual(self.notifications, ["sleep"])
         self.assertTrue(interaction.allowed(self.config, "alarm"))
@@ -121,7 +122,7 @@ class Semantic(unittest.TestCase):
             with mock.patch.object(claude_client, "send", return_value=value), \
                     mock.patch.object(claude_client, "coordinated_reply", return_value="文字仍可回答"):
                 self.session.ask("我在忙别的事情")
-            self.assertFalse(interaction.allowed(self.config))
+            self.assertFalse(interaction.allowed(self.config, "proactive"))
             self.assertFalse(interaction.idle(self.config, now=10 ** 12))
             self.assertTrue(interaction.allowed(self.config, "alarm"))
         with mock.patch.object(claude_client, "send", side_effect=claude_client.ClaudeUnavailable("offline")), \

@@ -476,23 +476,24 @@ class Listener:
 
 
 def load_whisper(model_path):
-    """Return (transcribe(audio, language) -> text, info). CUDA only, like local TTS."""
+    """Use CUDA when available; a fresh system can use CPU until its driver is ready."""
     started = time.perf_counter()
     import torch
     from transformers import WhisperForConditionalGeneration, WhisperProcessor
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is unavailable")
+    accelerated = torch.cuda.is_available()
+    device = 'cuda:0' if accelerated else 'cpu'
+    dtype = torch.float16 if accelerated else torch.float32
     processor = WhisperProcessor.from_pretrained(model_path)
     model = WhisperForConditionalGeneration.from_pretrained(
-        model_path, dtype=torch.float16, attn_implementation="sdpa").to("cuda:0").eval()
-    zh_prompt = processor.get_prompt_ids(stt.ZH_PROMPT, return_tensors="pt").to("cuda:0")
+        model_path, dtype=dtype, attn_implementation="sdpa").to(device).eval()
+    zh_prompt = processor.get_prompt_ids(stt.ZH_PROMPT, return_tensors="pt").to(device)
     state = {"prompt": True, "detected": None}
     continuity = stt.LanguageContinuity()
     # "auto" chooses only among the languages MYN's user speaks, which is far more
     # reliable on short utterances than Whisper's open 99-language detection.
     language_tokens = {code: processor.tokenizer.convert_tokens_to_ids("<|%s|>" % code)
                        for code in stt.AUTO_CANDIDATES}
-    start_token = torch.tensor([[model.generation_config.decoder_start_token_id]], device="cuda:0")
+    start_token = torch.tensor([[model.generation_config.decoder_start_token_id]], device=device)
 
     def detect(features):
         with torch.inference_mode():
@@ -512,7 +513,7 @@ def load_whisper(model_path):
 
     def transcribe_unlocked(audio, language):
         features = processor(audio, sampling_rate=SAMPLE_RATE,
-                             return_tensors="pt").input_features.to("cuda:0", dtype=torch.float16)
+                             return_tensors="pt").input_features.to(device, dtype=dtype)
         if language == "auto":
             try:
                 scores = detect(features)
@@ -535,11 +536,13 @@ def load_whisper(model_path):
     # One silent pass so the first real utterance does not pay for kernel warm-up.
     import numpy as np
     transcribe(np.zeros(SAMPLE_RATE, np.float32), "zh")
-    torch.cuda.synchronize()
+    if accelerated:
+        torch.cuda.synchronize()
     transcribe.state = state
     info = {"ok": True, "ready": True, "load_s": round(time.perf_counter() - started, 3),
-            "gpu": torch.cuda.get_device_name(0), "torch": torch.__version__,
-            "torch_allocated_mib": round(torch.cuda.memory_allocated() / 1048576)}
+            "gpu": torch.cuda.get_device_name(0) if accelerated else 'CPU (slower)',
+            "torch": torch.__version__,
+            "torch_allocated_mib": round(torch.cuda.memory_allocated() / 1048576) if accelerated else 0}
     return transcribe, info
 
 

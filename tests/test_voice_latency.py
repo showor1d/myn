@@ -53,6 +53,16 @@ class CombinedScene(unittest.TestCase):
         self.assertEqual(interaction.load(self.config)["mode"], "study")
         self.assertIn("下一步", result["answer"])
 
+    def test_inspection_does_not_reannounce_an_unchanged_sleep_scene(self):
+        interaction.observe(self.config, '我要睡觉了')
+        self.session.interaction_notify = mock.Mock()
+        with mock.patch.object(claude_client, 'send', return_value=json.dumps(
+                dict(self.decision, mode='sleep', scope='keep'))):
+            verdict, _ = self.inspect()
+        self.assertTrue(verdict[0])
+        self.session.interaction_notify.assert_not_called()
+        self.assertEqual(interaction.load(self.config)['mode'], 'sleep')
+
     def test_expiry_reader_changes_and_new_input_reclassify(self):
         for stale in ("expired", "reader", "new_input"):
             with self.subTest(stale=stale), \

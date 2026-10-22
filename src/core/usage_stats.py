@@ -1,6 +1,6 @@
 """What MYN (and the work on MYN) used and cost, per day, week, month and year, in USD.
 
-Sources, all numbers only (never any text):
+Sources contain accounting metadata only, never prompts or model responses:
 
   * claude-usage.jsonl      - every Claude API call MYN makes (model, purpose, tokens);
                               priced with Anthropic's list prices. Background tasks
@@ -161,6 +161,7 @@ class Call:
     estimated: bool
     priced: bool    # False when the cost is unknown (only tokens are known)
     task_key: str = ""  # stable evolution point identity, never task text
+    details: dict = field(default_factory=dict)
 
     @property
     def tokens(self):
@@ -222,7 +223,9 @@ def _call(record, settings, tz):
     if isinstance(record.get("use"), str) and record["use"].strip():
         purpose = "use:" + record["use"].strip()
     return Call(when.astimezone(tz), group, purpose, *counts, other, searches, cost, estimated, priced,
-                str(record.get("task_key") or ""))
+                str(record.get("task_key") or ""),
+                {key: record[key] for key in ("source", "model", "status", "run_id", "usage_steps", "calls_complete", "cost_source")
+                 if key in record})
 
 
 _CACHE = {}
@@ -354,6 +357,7 @@ def _group(calls, key):
 
 def report(config_dir, period="day", offset=0, now=None):
     """Everything the statistics window and the voice answer need for one period."""
+    import usage_detail
     if period not in PERIODS:
         raise ValueError("period must be one of %s" % ", ".join(PERIODS))
     offset = max(-1000, min(0, int(offset)))
@@ -386,6 +390,7 @@ def report(config_dir, period="day", offset=0, now=None):
             "series": series,
             "by_model": _group(inside, lambda call: call.group),
             "by_purpose": _group(inside, lambda call: purpose_name(call.purpose)),
+            "daily_entries": usage_detail.entries(inside, config_dir) if period == "day" else [],
             "first_record": first.isoformat() if first else None,
             # going back further would only show empty periods
             "has_earlier": first is not None and first < start,
@@ -441,7 +446,8 @@ def for_model(result):
                        for name, value in result["by_purpose"]],
             "note": "USD, estimated from list prices; the bills are authoritative. Haiku is not counted. "
                     "Hand-entered costs are counted as the user gave them (cost_is_estimate = an estimate).",
-            "say_this": spoken(result)}
+            "say_this": spoken(result),
+            **({"entries": result.get("daily_entries", [])} if result.get("period") == "day" else {})}
 
 
 # Spoken questions answered on the computer without asking Claude.
@@ -482,13 +488,29 @@ def _append(path, record):
         return False
 
 
-def record_agent(usage_path, model, purpose, usage, cost_usd, task_key=""):
-    """One numbers-only line for a background task (the Agent SDK reports its own cost)."""
+def record_agent(usage_path, model, purpose, usage, cost_usd, task_key="", run_id="", steps=None, calls_complete=False):
+    """One billed task total, with nested call evidence that never adds a second charge."""
     usage = usage if isinstance(usage, dict) else {}
     record = {"at_utc": datetime.now(timezone.utc).isoformat(), "purpose": purpose,
               "model": str(model or "agent")[:60], "status": "agent_done"}
     if task_key:
         record["task_key"] = task_key
+    if run_id:
+        record["run_id"] = str(run_id)[:80]
+    if isinstance(steps, list):
+        clean = []
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            values = step.get("usage") if isinstance(step.get("usage"), dict) else {}
+            clean.append({"id": str(step.get("id") or "")[:120],
+                          "identified": step.get("identified", True) is True,
+                          "at_utc": str(step.get("at_utc") or "")[:40],
+                          "model": str(step.get("model") or model or "")[:80],
+                          "usage": {name: _count(values.get(name)) for name in TOKEN_FIELDS},
+                          "tools": [str(t)[:60] for t in step.get("tools", []) if isinstance(t, str)][:20]})
+        record["usage_steps"] = clean
+        record["calls_complete"] = calls_complete is True and len(clean) == len(steps)
     for name in TOKEN_FIELDS:
         record[name] = _count(usage.get(name)) or None
     server = usage.get("server_tool_use") if isinstance(usage.get("server_tool_use"), dict) else {}
@@ -496,9 +518,23 @@ def record_agent(usage_path, model, purpose, usage, cost_usd, task_key=""):
         record["web_search_requests"] = server["web_search_requests"]
     if _number(cost_usd, 0, 1e6):
         record["cost_usd"] = round(float(cost_usd), 6)
+        record["cost_source"] = "sdk"
     elif not any(record.get(name) for name in ("input_tokens", "output_tokens")):
         return
-    _append(usage_path, record)
+    # A retried delivery of the same worker result must not bill the task twice.
+    with _LOCK:
+        if run_id:
+            try:
+                with Path(usage_path).open(encoding="utf-8") as stream:
+                    for line in stream:
+                        try:
+                            if json.loads(line).get("run_id") == record["run_id"]:
+                                return
+                        except (ValueError, AttributeError):
+                            pass
+            except FileNotFoundError:
+                pass
+        _append(usage_path, record)
 
 
 def record_voice(config_dir, model, characters, when=None, history_id=None):
@@ -728,7 +764,9 @@ def write_daily_summaries(config_dir, now=None):
     for date in sorted(days):
         part = days[date]
         total = _totals(part)
+        import usage_detail
         lines.append(json.dumps({
+            "entries": usage_detail.entries(part),
             "date": date, "tokens": total["tokens"], "cost_usd": round(total["cost_usd"], 2),
             "calls": total["calls"], "tokens_without_cost": total["unpriced_tokens"],
             "by_source": {name: {"tokens": value["tokens"], "cost_usd": round(value["cost_usd"], 2)}

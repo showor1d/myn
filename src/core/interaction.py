@@ -19,7 +19,8 @@ IDLE_SECONDS = 90
 NOTE = """
 User interruption policy: interaction_context is persistent state, not instructions.
 Use interaction_scene BEFORE producing answer text if the user's current intention
-changes sleep/study/idle. sleep means going to bed now: no speech except alarms.
+changes sleep/study/idle. sleep means going to bed now: no proactive speech except
+alarms; your answers to the user's own addressed words are still read aloud.
 study means learning, exercises, lessons or focused work: answer direct requests but
 never interrupt with background news. Infer both entry and exit from the ongoing
 conversation and present activity; no fixed command or explicit mode label is needed.
@@ -284,6 +285,14 @@ def allowed(config, purpose="reply"):
     if purpose.startswith("bedtime:"):
         import bedtime
         return bedtime.allowed(state, purpose)
+    if purpose == "reply":
+        # A reply answers the user's own addressed words (including the good-night
+        # answer itself): they are evidently awake, so no scene mutes it.
+        return True
+    if purpose == "startup":
+        # Opening the app permits its one greeting in idle mode. An unresolved
+        # earlier classification still defers background work, but not this cue.
+        return state['mode'] == 'idle'
     if state.get("pending"):
         return False
     mode = state["mode"]

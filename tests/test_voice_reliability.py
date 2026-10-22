@@ -86,6 +86,9 @@ class Queue(unittest.TestCase):
         judged = []
         window._judge_heard = judged.append
         window.hear("不要了")
+        self.assertEqual(judged, [])
+        window.hear("麦恩")
+        window.hear("不要了")
         self.assertEqual(judged, ["不要了"])
         self.assertEqual(window.addressed, [])
         # Echo rejection still happens before pending-review routing.
@@ -98,6 +101,8 @@ class Queue(unittest.TestCase):
         import queue
         window = self.window()
         window.events = queue.Queue()
+        window._open_voice_conversation(time.time(), time.time())
+        window._judge_heard = VoiceMixin._judge_heard.__get__(window)
         window.session._key = lambda: "synthetic"
         window.session.db_path = Path("unused-test-only.db")
         jobs = []

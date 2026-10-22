@@ -78,6 +78,11 @@ def receipt_data(result, period):
     delta = (total["cost_usd"] - base) / base * 100 if base else None
     change = ("%s %.0f%%" % ("↑" if delta >= 0 else "↓", abs(delta))) if delta is not None else (
         'New' if total["cost_usd"] else "—")
+    import usage_detail
+    daily_rows = [{"name": row["model"], "tokens": format(row["tokens"], ","),
+                   "cost": usage_detail.usd(row["cost_usd"]) if row["priced"] else 'Unpriced',
+                   "detail": usage_detail.description(row), "usage_category": row["category"]}
+                  for row in sorted(result.get("daily_entries", []), key=lambda r: (r["category"], r["when"]))]
     return {
         "t": "usage_receipt", "print_key": period + ":" + result["label"],
         "date": result["label"], "tokens": format(total["tokens"], ","),
@@ -86,7 +91,7 @@ def receipt_data(result, period):
         "trend": "up" if delta is not None and delta > 0 else "down" if delta is not None and delta < 0 else "",
         "series": {key: [b[key] for b in result["series"] if not b["future"]]
                    for key in ("tokens", "cost_usd")},
-        "rows": [{"name": name, "tokens": format(value["tokens"], ","),
+        "rows": daily_rows if period == "day" else [{"name": name, "tokens": format(value["tokens"], ","),
                   "cost": short_usd(value["cost_usd"]) if value["priced"] else 'Unpriced'}
                  for name, value in result["by_model"]],
         "kinds": [[label, format(total[key], ",")] for key, label, _ in TOKEN_KINDS if total[key]],
@@ -384,7 +389,19 @@ class UsageWindow:
         c.delete("all")
         width = max(280, c.winfo_width())
         left, right = 16, width - 16
+        daily_sizes = {}
+        for index, item in enumerate(data["rows"]):
+            if item.get("usage_category"):
+                measured = []
+                for value, size, space in ((item["name"], 9, right-left-125), (item.get("detail", ""), 8, right-left-32)):
+                    ident = c.create_text(0, 0, text=value, anchor="nw", width=max(80, space), font=(self.font, size))
+                    box = c.bbox(ident)
+                    measured.append(box[3]-box[1] if box else 16)
+                    c.delete(ident)
+                daily_sizes[index] = measured
         height = 340 + header_extra + len(data["rows"]) * 46 + len(data.get("kinds", [])) * 20
+        height += sum(sum(sizes)+20-46 for sizes in daily_sizes.values())
+        height += 28 * len({r["usage_category"] for r in data["rows"] if r.get("usage_category")})
         if self.expense_mode:
             height += 80 + (166 if data["zero"] else 0) + 28 * len(data["note"].splitlines())
             if data.get("token_total") and not token_category:
@@ -443,7 +460,21 @@ class UsageWindow:
             y += 46
         elif not data["rows"]:
             text(width/2, y, 'No usage records this period', 10, "center")
-        for item in data["rows"]:
+        usage_category = None
+        for index, item in enumerate(data["rows"]):
+            if index in daily_sizes:
+                if usage_category != item["usage_category"]:
+                    usage_category = item["usage_category"]
+                    text(left+16, y, usage_category, 10)
+                    y += 28
+                name_height, detail_height = daily_sizes[index]
+                c.create_text(left+16, y+shift, text=item["name"], anchor="nw", fill="#30342f",
+                              width=max(80, right-left-125), font=(self.font, 9))
+                text(right-16, y+8, item["cost"], 9, "e")
+                c.create_text(left+16, y+name_height+6+shift, text=item.get("detail", ""), anchor="nw",
+                              width=right-left-32, fill="#73766c", font=(self.font, 8))
+                y += name_height+detail_height+20
+                continue
             row(y, item["name"][:22], item["cost"])
             text(left+16, y+18, item.get("detail", "") if self.expense_mode else item["tokens"]+" Token",
                  8, color="#73766c")

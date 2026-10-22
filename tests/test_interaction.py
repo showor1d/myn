@@ -32,12 +32,17 @@ class Temp(unittest.TestCase):
 
 
 class State(Temp):
-    def test_sleep_persists_and_only_alarms_bypass(self):
+    def test_sleep_persists_and_only_alarms_and_direct_replies_bypass(self):
         interaction.observe(self.config, "我要睡觉了")
         self.assertEqual(interaction.load(self.config)["mode"], "sleep")
-        for purpose in ("reply", "proactive", "scheduled"):
+        for purpose in ("proactive", "scheduled"):
             self.assertFalse(interaction.allowed(self.config, purpose))
         self.assertTrue(interaction.allowed(self.config, "alarm"))
+        # The good-night answer and later questions the user addresses to MYN are spoken.
+        self.assertTrue(interaction.allowed(self.config, "reply"))
+        interaction.observe(self.config, "为什么你说话没有声音？", semantic=True)
+        self.assertTrue(interaction.allowed(self.config, "reply"))
+        self.assertFalse(interaction.allowed(self.config, "proactive"))
         self.assertFalse(interaction.idle(self.config, now=time.time() + 86400))
         interaction.observe(self.config, "我醒了")
         self.assertTrue(interaction.allowed(self.config))
@@ -98,10 +103,10 @@ class State(Temp):
 
     def test_corrupt_state_is_quiet_but_alarm_and_explicit_recovery_work(self):
         (self.config / interaction.FILE).write_text("broken", encoding="utf-8")
-        self.assertFalse(interaction.allowed(self.config))
+        self.assertFalse(interaction.allowed(self.config, "proactive"))
         self.assertTrue(interaction.allowed(self.config, "alarm"))
         interaction.observe(self.config, "我有空了")
-        self.assertTrue(interaction.allowed(self.config))
+        self.assertTrue(interaction.allowed(self.config, "proactive"))
 
     def test_invite_then_later_then_show_never_adopts(self):
         point = self.point()
@@ -211,6 +216,7 @@ class Window(Temp):
         self.win.reader_open = False
         self.win._evolution_announce(self.config)
         self.assertEqual(self.win.append.call_count, 1)
+        self.assertFalse(self.win.conversation_open)
         self.assertIn('good time to review', self.win.append.call_args[0][1])
         self.assertNotIn("详细步骤", self.win.append.call_args[0][1])
         self.assertNotEqual(evolution.get(self.config, point["id"])["announced"], "proposed")
@@ -223,9 +229,8 @@ class Window(Temp):
         interaction.observe(self.config, "我要睡觉了")
         self.win.stop_speech = mock.Mock()
         with mock.patch("myn_gui.threading.Thread") as worker:
-            self.win.speak("晚安")
             self.win.speak("后台完成", purpose="proactive")
-            self.win._stream_speak(["迟到的模型文字"])
+            self.win._stream_speak(["定时任务文字"], purpose="scheduled")
             worker.assert_not_called()
             self.win.stop_speech.assert_not_called()
             self.win.speak("起床啦", purpose="alarm")
@@ -233,8 +238,45 @@ class Window(Temp):
             self.assertEqual(self.win.tts_purpose, "alarm")
             self.assertTrue(self.win._speech_allowed(self.win.tts_purpose))
 
-    def test_entering_sleep_invalidates_inflight_audio(self):
+    def test_good_night_reply_and_later_direct_question_are_spoken_in_sleep(self):
         interaction.observe(self.config, "我要睡觉了")
+        self.win.stop_speech = mock.Mock()
+        self.win.speech_queue = None
+        self.win.scheduled_running = None
+        with mock.patch("myn_gui.threading.Thread") as worker:
+            self.win.speak("晚安")
+            self.assertEqual(worker.call_count, 1)
+            self.win.speech_queue = None
+            interaction.observe(self.config, "为什么你说话没有声音？", semantic=True)
+            self.win._stream_speak(["因为刚才处于睡眠静音。"])
+            self.assertEqual(worker.call_count, 2)
+            self.assertTrue(self.win._speech_allowed(self.win.tts_purpose))
+            self.win.speech_queue = None
+            self.win.speak("后台任务完成了", purpose="proactive")
+            self.assertEqual(worker.call_count, 2)
+
+    def test_bedtime_briefing_follows_spoken_good_night_without_cutting_it(self):
+        context = interaction.observe(self.config, "我要睡觉了")
+        briefing = dict(text="睡前汇报：明天没有日程。", date="2099-01-01",
+                        revision=context["revision"], created=time.time())
+        self.win.queued_question = None
+        self.win.tts_purpose = "reply"
+        pending = queue.Queue()
+        self.win.speech_queue = pending
+        self.win.speech_stream = None
+        text = self.win._claim_bedtime_briefing(briefing)
+        self.assertEqual(text, briefing["text"])
+        self.assertIsNone(self.win._claim_bedtime_briefing(briefing))  # once only
+        self.assertTrue(self.win._finish_stream_speech(text))
+        queued = []
+        while not pending.empty():
+            queued.append(pending.get_nowait())
+        self.assertIsNone(queued[-1])
+        self.assertIn("睡前汇报", "".join(segment for segment in queued[:-1]))
+
+    def test_entering_sleep_invalidates_inflight_background_audio(self):
+        interaction.observe(self.config, "我要睡觉了")
+        self.win.tts_purpose = "proactive"
         self.win.speech_queue = queue.Queue()
         pending = self.win.speech_queue
         with mock.patch.object(tts, "cancel_local"):
@@ -260,6 +302,7 @@ class Window(Temp):
 
     def test_late_audio_is_discarded_but_alarm_audio_plays(self):
         interaction.observe(self.config, "我要睡觉了")
+        self.win.tts_purpose = "proactive"
         self.win.events.put(("tts_chunk", 10, b"background"))
         self.win.process_events()
         self.win.tts_player.enqueue.assert_not_called()

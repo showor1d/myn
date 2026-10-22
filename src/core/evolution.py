@@ -725,11 +725,11 @@ def announcement(point):
         return text, '%s%s. The proposed plan is: %s What do you think?' % (_origin(point), lacking, plan.get("summary", "")[:160])
     if status == "built":
         if point.get("plan_approved") is True:
-            return ('Evolution point "%s" passed testing. It will be backed up, applied and restarted automatically when idle.' % point["title"],
-                    'Tests passed; the update will apply automatically when idle.')
-        text = ('Evolution point "%s" is ready and all tests passed.\n\n%s\n\nChanges:\n%s\n\nApply this update? (You can answer directly. '
+            return ('Evolution point "%s" passed host verification against the baseline. It will be backed up, applied and restarted automatically when idle.' % point["title"],
+                    'Verification passed; the update will apply automatically when idle.')
+        text = ('Evolution point "%s" is ready and passed host verification against the baseline.\n\n%s\n\nChanges:\n%s\n\nApply this update? (You can answer directly. '
                 'The current version is backed up first, and restored automatically if the new version fails to start.)'
                 % (point["title"], (point.get("result") or "")[:800],
                    "\n".join("· " + line for line in point.get("changed") or [])))
-        return text, 'Evolution point "%s" is ready and all tests passed. Apply the update?' % point["title"]
+        return text, 'Evolution point "%s" passed host verification. Apply the update?' % point["title"]
     return "", ""

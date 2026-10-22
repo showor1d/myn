@@ -332,10 +332,10 @@ class SpeechChecks(unittest.TestCase):
         window.events.put(event)
         window.process_events()
         window.tts_player.enqueue.assert_called_once_with(b"ID3greeting", 0.8)
-        # A speech-service failure for the greeting is not shown as an error.
+        # A startup service failure is visible instead of silently losing audio.
         window.events.put(("tts_error", window.quiet_tts_request, "未配置 ElevenLabs API Key"))
         window.process_events()
-        window.append.assert_not_called()
+        self.assertIn('Startup voice could not play', window.append.call_args.args[1])
 
     def test_opening_greeting_waits_for_gpu_intro_and_respects_auto_read(self):
         window = self._greeting_window()
@@ -354,6 +354,132 @@ class SpeechChecks(unittest.TestCase):
             silent._greet_aloud()
             synthesize.assert_not_called()
         self.assertTrue(silent.events.empty())
+
+    def test_startup_network_failure_retries_once_before_any_audio(self):
+        window = self._greeting_window()
+        with mock.patch.object(tts.ElevenLabsProvider, 'stream', side_effect=[
+                tts.TTSError('Speech network request failed. The text reply was preserved.'),
+                iter([b'ID3recovered'])]), mock.patch.object(tts, 'cancel_local'):
+            window._greet_aloud()
+            error = window.events.get(timeout=5)
+            window._greeting_failed(error[1], error[2])
+            window.root.after.assert_called_once()
+            window.root.after.call_args.args[1]()
+            self.assertEqual(window.events.get(timeout=5)[2], b'ID3recovered')
+        self.assertEqual(window._greeting_retries, 1)
+        window.append.assert_not_called()
+
+    def test_startup_does_not_retry_after_audio_or_permanent_failure(self):
+        for started, retries, message in ((True, 0, 'Speech network request failed.'),
+                                          (False, 1, 'Speech network request failed.'),
+                                          (False, 0, 'ElevenLabs authentication failed.')):
+            window = self._greeting_window()
+            window._greeting_request = 0
+            window._greeting_audio_started = started
+            window._greeting_retries = retries
+            self.assertTrue(window._greeting_failed(0, message))
+            window.root.after.assert_not_called()
+            window.append.assert_called_once()
+
+    def test_startup_retry_never_interrupts_new_activity_or_quiet_scene(self):
+        for change in ('request', 'busy', 'quiet', 'user'):
+            window = self._greeting_window()
+            window._greeting_request = 0
+            window._greeting_text = 'Good morning'
+            window._greeting_failed(0, 'Speech network request failed.')
+            if change == 'request':
+                window.tts_request_id += 1
+            elif change == 'busy':
+                window.busy = True
+            elif change == 'quiet':
+                window._speech_allowed = lambda purpose: False
+            else:
+                window._messages = lambda: [('you', 'Hello', None)]
+            with mock.patch.object(window, 'speak') as speak:
+                window.root.after.call_args.args[1]()
+                speak.assert_not_called()
+            self.assertIn('Retry skipped', window.greeting_outcome)
+
+    def test_startup_playback_confirmation_and_stale_errors(self):
+        window = self._greeting_window()
+        window.tts_request_id = window._greeting_request = 7
+        with mock.patch.object(window, '_reply_stage'):
+            window._speech_playback_started()
+        self.assertTrue(window._greeting_audio_started)
+        self.assertEqual(window.greeting_outcome, 'Audio playback started')
+        window.tts_request_id = 8
+        self.assertFalse(window._greeting_failed(7, 'Speech network request failed.'))
+        window.append.assert_not_called()
+        window.root.after.assert_not_called()
+        diagnostic = (self.config / 'voice-diagnostics.jsonl').read_text(encoding='utf-8')
+        self.assertIn('playback_started', diagnostic)
+        self.assertNotIn('Good evening', diagnostic)
+
+    def test_missing_intro_event_cannot_block_greeting_forever(self):
+        window = self._greeting_window()
+        window.web, window.web_active, window.web_intro = mock.Mock(), True, True
+        window._greet_waits = 50
+        with mock.patch.object(window, 'speak') as speak:
+            window._greet_aloud()
+        speak.assert_called_once_with('Good evening', purpose='startup')
+        self.assertTrue(window.greeted)
+
+    def test_startup_player_error_is_reported_as_startup_failure(self):
+        window = self._greeting_window()
+        window._greeting_request = window.quiet_tts_request = 0
+        window.tts_player.enqueue.side_effect = tts.TTSError('Playback device unavailable.')
+        window.events.put(('tts_chunk', 0, b'ID3audio'))
+        window.process_events()
+        self.assertIn('Read-aloud failed', window.greeting_outcome)
+        window.append.assert_called_once()
+
+    def test_idle_pending_state_does_not_silence_startup_or_unmute_background_work(self):
+        import interaction
+        interaction.observe(self.config, 'ambiguous old input', semantic=True)
+        before = (self.config / interaction.FILE).read_bytes()
+        window = self._greeting_window()
+        with mock.patch.object(window, 'speak') as speak:
+            window._greet_aloud()
+        speak.assert_called_once_with('Good evening', purpose='startup')
+        self.assertFalse(interaction.allowed(self.config, 'proactive'))
+        self.assertEqual((self.config / interaction.FILE).read_bytes(), before)
+
+    def test_startup_still_respects_sleep_study_media_and_singing(self):
+        import interaction
+        import singing
+        for blocker in ('sleep', 'study', 'media', 'singing'):
+            interaction.observe(self.config, '我醒了')
+            singing.guard(self.config).active = False
+            window = self._greeting_window()
+            if blocker in ('sleep', 'study'):
+                interaction.observe(self.config, '我要睡觉了' if blocker == 'sleep' else '我要学习了')
+                interaction.observe(self.config, 'ambiguous old input', semantic=True)
+            elif blocker == 'media':
+                window.media_playing = True
+            else:
+                singing.guard(self.config).signal(1)
+            with mock.patch.object(window, 'speak') as speak:
+                window._greet_aloud()
+            speak.assert_not_called()
+            self.assertIn('Not spoken', window.greeting_outcome)
+
+    def test_pending_background_notice_does_not_replace_the_startup_greeting(self):
+        import interaction
+        interaction.observe(self.config, 'ambiguous old input', semantic=True)
+        window = self._greeting_window()
+        window.dev_notice = 'Development completed'
+        with mock.patch.object(window, 'speak') as speak:
+            window._greet_aloud()
+        speak.assert_called_once_with('Good evening', purpose='startup')
+
+    def test_startup_does_not_interrupt_a_conversation_started_during_launch(self):
+        import interaction
+        interaction.observe(self.config, 'ambiguous input', semantic=True)
+        window = self._greeting_window()
+        window._messages = lambda: [('you', 'Hello', None)]
+        with mock.patch.object(window, 'speak') as speak:
+            window._greet_aloud()
+        speak.assert_not_called()
 
 
 class PlayerDucking(unittest.TestCase):

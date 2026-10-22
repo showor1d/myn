@@ -405,6 +405,8 @@ body::after { background: rgba(6, 14, 24, .025); }
 .ui-table th { background: rgba(12, 24, 36, .22); backdrop-filter: none; }
 .ui-table tr.row:hover td { background: rgba(121, 191, 225, .12); }
 #sheet-modal { background: rgba(6, 16, 28, .08); backdrop-filter: none; }
+#sheet-modal-box.read-only-notice { background: #10212e; color: #e4f0f7; }
+#sheet-modal-box.read-only-notice .ui-p { color: #d5e5ee; }
 .ui-btn, .ui-btn.primary, #send, #mic, #pic, #ask-form button, #ask-chips button, .msg .more {
   background: rgba(121, 191, 225, .15); border: 1px solid rgba(193,230,251,.26);
   box-shadow: inset 0 1px 0 rgba(235,248,255,.14);

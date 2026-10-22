@@ -189,8 +189,8 @@ class ReaderMixin:
         self.silence_gate = None
         self.busy = False
         self.reply_silenced = False
-        self.conversation_open = False
-        self.awaiting_until = 0.0
+        self._voice_turn_active = False
+        self._close_voice_conversation('not_addressed')
         now = time.time()
         self.recent_heard = [(when, said) for when, said in self.recent_heard if now - when < 180][-5:] + \
             [(now, question)]

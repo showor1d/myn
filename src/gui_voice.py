@@ -44,11 +44,11 @@ class VoiceMixin:
             return None
 
     def _voice_attention(self):
-        if self._wants_listening():
+        if self._wants_listening() and self._in_conversation():
             short = bool(self._voice_review()) and getattr(self, "reader_scene", "") != "tutoring"
             if short and getattr(self.session, "db_path", None):
                 short = interaction.load(config_for_db(self.session.db_path))["mode"] == "idle"
-            self._stt_job(stt.client.attention, 120, short, quiet=True)
+            self._stt_job(stt.client.attention, conversation_mode.IDLE_SECONDS, short, quiet=True)
 
     def _reply_stage(self, stage):
         marker = getattr(self, "_reply_latency", None)
@@ -135,10 +135,7 @@ class VoiceMixin:
 
     def _stop_listening(self):
         self.always_on_active = False
-        self.awaiting_until = 0.0
-        self._judge_generation = getattr(self, "_judge_generation", 0) + 1
-        self._judge_pending = ()
-        self._judge_running = False
+        self._close_voice_conversation('microphone_stopped')
         self._stt_job(stt.client.unlisten, quiet=True)
         self._set_voice_label("")
 
@@ -149,7 +146,7 @@ class VoiceMixin:
             self._stt_job(stt.client.listen, self.stt_settings.device, self.stt_settings.language,
                           self.stt_settings.wake_words,
                           quiet=True, result_event="listen_started")
-        if self._in_conversation() or self._voice_review():
+        if self._in_conversation():
             self._voice_attention()
         self._finish_wake_learning()
         self.root.after(20000, self._listen_watchdog)
@@ -182,17 +179,13 @@ class VoiceMixin:
             return
         if message.get('event') == 'wake_detected':
             self._last_voice_activity = time.time()
-            # Candidate only: never authorise commands or speak an acknowledgement.
-            # While output is playing, wait for the existing text echo checks.
-            if self.always_on_active and not self.listening and not self._speaking():
-                self._set_voice_label('Listening...', clear_after=5000)
-                if self.web_active:
-                    self.web.js({'cmd': 'wake'})
+            # The UI confirms a wake only after transcription and echo checks.
+            self._voice_trace('wake_candidate')
             return
         if message.get("event") == "voice_stage":
             self._voice_trace(message.get("stage", "unknown"),
                               **{k: v for k, v in message.items() if k in ("reason", "seconds", "wait_s")})
-            if message.get("stage") == "recognizing" and (self._in_conversation() or self._voice_review()):
+            if message.get("stage") == "recognizing" and self._in_conversation():
                 self._set_voice_label('Heard you. Transcribing...', clear_after=2500)
             return
         if message.get("event") == "level":
@@ -218,9 +211,13 @@ class VoiceMixin:
             return
         self._voice_trace("recognized", chars=len(text),
                           **{k: v for k, v in message.items() if k in ("transcribe_s", "wait_s", "language", "silence_s")})
-        # Woken by the wake word exactly as set, or only by something like it (a sound-alike,
-        # a voice match): the looser ones also fire on songs and games, so the model may stay silent.
+        # Check the original transcript before fuzzy display normalization.
+        # A sound-alike or acoustic match alone must not open a session.
         certain = stt.exact_wake(text, self.stt_settings.all_wake_words)
+        self._voice_trace("wake_evidence", exact_wake=certain, acoustic_wake=voice_woke,
+                          streaming_wake=bool(message.get('streaming_wake')),
+                          record_only=bool(message.get('record_only')),
+                          capture_id=str(message.get('capture_id') or '')[:80])
         # Normalize recognized wake words to their configured spelling.
         text = stt.show_wake(text, self.stt_settings.all_wake_words)
         try:
@@ -272,133 +269,74 @@ class VoiceMixin:
             if message.get('capture_id'):
                 self._note_heard(text)
             return
-        if message.get('record_only'):
-            try:
-                import alarm_ringing
-                ringing_now = bool(alarm_ringing.active(config_for_db(self.session.db_path)))
-            except (OSError, ValueError, AttributeError):
-                ringing_now = False
-            import singing
-            singing_active = (getattr(self.session, 'db_path', None) is not None and
-                              singing.guard(config_for_db(self.session.db_path)).snapshot()['active'])
-            live_window = singing_active or self._voice_review() or ringing_now or (
-                self._in_conversation(now) and started >= self.conversation_touch - .1)
-            if not (fresh and live_window):
-                self._note_heard(text)
+        # Only a fresh, explicitly transcribed wake phrase opens hands-free chat.
+        # Acoustic/streaming detectors are candidates; neither grants permission.
+        active = self._in_conversation(now)
+        if not fresh or (not certain and not active):
+            self._voice_trace('discard', reason='stale_capture' if not fresh else 'wake_required')
+            self._note_heard(text)
+            return
+        if not certain and float(message.get('end', 0)) < getattr(self, '_conversation_started', 0) - .1:
+            self._voice_trace('discard', reason='previous_session_capture')
+            self._note_heard(text)
+            return
+        if not certain:
+            rest = None
+            if now <= self.awaiting_until and (self._is_wake_ack(text) or stt.is_backchannel(text)):
                 return
-        if rest is None and message.get("wake_voice") is True:
-            # Your voice saying the wake word, however speech recognition wrote it.
-            try:
-                after = float(message.get("after_wake", 1))
-            except (TypeError, ValueError):
-                after = 1.0
-            # A sound match does not prove the first N transcript characters are
-            # The name may already be absent; trimming again would remove the command.
-            rest = "" if after < 0.35 else text
-        elif rest is None and message.get('streaming_wake') and fresh:
-            # KWS may hear the keyword even when ASR spells it differently. Pass
-            # the complete utterance through semantic addressing, never execute here.
-            rest = text
+            if over_myn and (echo > self.BARGE_IN_SHARE or stt.is_backchannel(text)):
+                self._voice_trace('discard', reason='backchannel_or_partial_echo')
+                return
         origin_key = rest if rest else text
-        if rest and text in getattr(self, '_speech_records', {}):
-            if rest != text:
-                self._speech_records.setdefault(rest, []).append(self._speech_records[text].pop())
-                if not self._speech_records[text]:
-                    self._speech_records.pop(text)
-        try:
-            ended = float(message.get("end", 0))
-            if 0 <= now-ended < 180:
-                origins = getattr(self, "_voice_origins", {})
-                origins = {k: [t for t in v if now-t < 180] for k, v in origins.items()}
-                origins[origin_key] = (origins.get(origin_key, []) + [ended])[-20:]
-                self._voice_origins = dict(list(origins.items())[-40:])
-        except (TypeError, ValueError):
-            pass
-        # A name or thanks inside lyrics is not enough to acknowledge a wake.
+        if rest and rest != text and text in getattr(self, '_speech_records', {}):
+            self._speech_records.setdefault(rest, []).append(self._speech_records[text].pop())
+            if not self._speech_records[text]:
+                self._speech_records.pop(text)
+        ended = float(message.get('end', 0))
+        origins = getattr(self, '_voice_origins', {})
+        origins = {k: [t for t in v if now-t < 180] for k, v in origins.items()}
+        origins[origin_key] = (origins.get(origin_key, []) + [ended])[-20:]
+        self._voice_origins = dict(list(origins.items())[-40:])
         import singing
-        if (fresh and getattr(self.session, 'db_path', None) is not None and
-                singing.guard(config_for_db(self.session.db_path)).snapshot()['active']):
-            self._judge_heard(text)
-            return
-        if rest is None:
-            # A ringing alarm opens a narrow response window even in sleep mode.
-            # Echo rejection above still applies; meaning is checked by the scene model.
-            try:
-                import alarm_ringing
-                ringing = bool(alarm_ringing.active(config_for_db(self.session.db_path)))
-            except (OSError, ValueError, AttributeError):
-                ringing = False
-            if ringing and not stt.is_backchannel(text):
-                self._addressed(text, heard=True)
-                return
-            if self._voice_review() and not (now <= self.awaiting_until):
-                # The pending proposal survives time spent reading. Still judge the
-                # speaker's intent; background speech never becomes automatic consent.
-                self._voice_attention()
-                self._set_voice_label('Heard you. Interpreting...', clear_after=4000)
-                self._judge_heard(text)
-                return
-            if now <= self.awaiting_until and started >= self.awaiting_after - 0.1 and \
-                    (self._is_wake_ack(text) or stt.is_backchannel(text)):
-                return  # Ignore MYN's own acknowledgement or a brief listening noise and wait for the sentence.
-            if now <= self.awaiting_until and started >= self.awaiting_after - 0.1:
-                # Said right after a bare wake word (even if MYN had just been talking).
-                self.awaiting_until = 0.0
-                self._addressed(text, heard=not self.awaiting_certain)
-            elif over_myn and (echo > self.BARGE_IN_SHARE or stt.is_backchannel(text)):
-                self._voice_trace("discard", reason="backchannel_or_partial_echo")
-                self.last_barge = 'Not interrupted: %s' % ('Backchannel only' if stt.is_backchannel(text) else 'Mixed with echo')
-                return  # Ignore partial echoes and brief listening acknowledgements.
-            elif over_myn:
-                self.last_barge = 'Interrupted and answered'
-                # You talked over MYN: stop and listen, like a person would (in a
-                # conversation or not — while MYN is talking, it is talking to you).
-                self.conversation_open = True
-                self.conversation_touch = now
-                self._addressed(text, heard=True)  # usually for MYN; if not, she stays silent
-            elif self._in_conversation(now):
-                # No wake word needed mid-conversation: MYN decides if it was for her —
-                # except right after she answered, when it is plainly your reply to her.
-                if 0 <= started - self._last_reply_end() <= self.FOLLOW_ON_SECONDS:
-                    self.conversation_touch = now
-                    self._addressed(text, heard=True)
-                else:
-                    self._judge_heard(text)
-            else:
-                self._note_heard(text)
-            return
-        self.interrupt_speech()  # the wake word interrupts MYN, like a person would
-        self._voice_attention()
-        self.conversation_open = True
-        self.conversation_touch = now
-        if self.web_active:
-            self.web.js({"cmd": "wake"})  # a bright ripple on the core's membrane
-        if not rest:
-            self._take_speech_record(text)
-            try:
-                self.awaiting_after = float(message.get("end", now))
-            except (TypeError, ValueError):
-                self.awaiting_after = now
-            self.awaiting_until = now + stt.FOLLOW_UP_SECONDS
-            self.awaiting_certain = certain
-            self._set_voice_label('Listening...', clear_after=stt.FOLLOW_UP_SECONDS * 1000)
-            if certain:  # only the wake word said clearly: a sound-alike or voice match stays silent
+        singing_active = (getattr(self.session, 'db_path', None) is not None and
+                          singing.guard(config_for_db(self.session.db_path)).snapshot()['active'])
+        if certain:
+            self._open_voice_conversation(started, now)
+            self._voice_attention()
+            if not singing_active:
+                self.interrupt_speech()
                 self._wake_ack()
-            return
+                if self.web_active:
+                    self.web.js({'cmd': 'wake'})
+            if not rest and not singing_active:
+                self._take_speech_record(text)
+                self.awaiting_after = ended
+                self.awaiting_until = now + stt.FOLLOW_UP_SECONDS
+                self.awaiting_certain = True
+                self._set_voice_label('Listening...', clear_after=stt.FOLLOW_UP_SECONDS * 1000)
+                return
         self.awaiting_until = 0.0
-        self._addressed(rest, heard=not certain)
+        self._set_voice_label('Heard you. Checking who you are speaking to...', clear_after=4000)
+        self._judge_heard(rest if rest else text)
 
-    # Brief spoken acknowledgement after a bare wake word.
+    # Older spoken acknowledgements remain recognizable as echoes.
     WAKE_ACKS = ("I'm here.", "Yes?", "I'm listening.")
     wake_ack_request = None  # the speech request of the last wake reply
 
     def _wake_ack(self):
-        """Say one short fixed line out loud: not shown, not saved, not a reply; no error popup."""
-        if not self.tts_settings.auto_read or self.busy:
-            return  # while a reply is being written the wake word has silenced MYN's speech
-        import random
-        self.speak(random.choice(self.WAKE_ACKS))
-        self.wake_ack_request = self.quiet_tts_request = self.tts_request_id
+        """Confirm an exact wake locally; never synthesize speech or delay the next sentence."""
+        now = time.monotonic()
+        if now - getattr(self, '_wake_chime_at', float('-inf')) < 1.5:
+            return
+        self._wake_chime_at = now
+        player = getattr(self, 'tts_player', None)
+        if player is None:
+            return
+        try:
+            player.set_output_device(self.tts_settings.output_device)
+            player.play_wake_chime(self.tts_settings.volume)
+        except tts.TTSError:
+            self._voice_trace('wake_feedback', reason='playback_unavailable')
 
     def _is_wake_ack(self, text):
         def bare(said):
@@ -408,7 +346,6 @@ class VoiceMixin:
         return bool(bare(text)) and bare(text) in {bare(said) for said in known}
 
     awaiting_certain = True  # the bare wake word before the awaited sentence was the exact one
-    FOLLOW_ON_SECONDS = 8  # speaking within this long after MYN's answer needs no judging
     last_answer_at = 0.0  # when MYN's last answer finished appearing
 
     def _last_reply_end(self):
@@ -419,19 +356,55 @@ class VoiceMixin:
     BARGE_IN_SHARE = 0.25  # talking over MYN counts only when clearly not its echo
     ECHO_TAIL_S = 1.2  # room/recording tail after output ends; not an input mute window
 
+    def _close_voice_conversation(self, reason):
+        """End a session and invalidate work that has not been executed yet."""
+        self.conversation_open = False
+        self.awaiting_until = 0.0
+        self.awaiting_certain = False
+        self._judge_generation = getattr(self, '_judge_generation', 0) + 1
+        pending = getattr(self, '_judge_pending', ())
+        queued = getattr(self, '_pending_voice', ())
+        self._judge_pending = ()
+        self._judge_running = False
+        # Explicit push-to-talk requests remain deliberate individual requests.
+        self._pending_voice = tuple(packet for packet in queued if not packet[1])
+        for text in pending:
+            self._note_heard(text)
+        for packet in queued:
+            if packet[1]:
+                self._note_heard(packet[0])
+        self._voice_trace('conversation_closed', reason=reason)
+
+    def _open_voice_conversation(self, started, now):
+        self._close_voice_conversation('new_wake')
+        self.conversation_open = True
+        self.conversation_touch = now
+        self._conversation_started = started
+        if getattr(self.session, 'db_path', None) is not None:
+            self._voice_scene_mode = interaction.load(config_for_db(self.session.db_path))['mode']
+        generation = self._judge_generation
+        def tick():
+            if generation == self._judge_generation and self._in_conversation():
+                self.root.after(1000, tick)
+        self.root.after(1000, tick)
+
     def _in_conversation(self, now=None):
-        """Open from the wake word until a quiet spell (MYN speaking keeps it open)."""
+        """Keep a woken session while exchanging words, then close after 30 seconds."""
         if not self.conversation_open:
             return False
         now = time.time() if now is None else now
-        if self.busy or now - max(self.conversation_touch, self.last_speaking) \
-                <= conversation_mode.IDLE_SECONDS:
+        if (self.busy and getattr(self, '_voice_turn_active', False)) or now - max(
+                self.conversation_touch, self.last_speaking) <= conversation_mode.IDLE_SECONDS:
             return True
-        self.conversation_open = False
+        self._close_voice_conversation('idle_timeout')
+        self._set_voice_label('Voice chat ended. Say Hey, Mine to start again', clear_after=2500)
         return False
 
     def _judge_heard(self, text):
         """Ask, in the background, whether this sentence continues the conversation."""
+        if not self._in_conversation():
+            self._note_heard(text)
+            return
         if len(getattr(self, "_judge_pending", ())) >= 20:
             self._voice_trace("discard", reason="judge_queue_full")
             self._note_heard(text)
@@ -443,6 +416,8 @@ class VoiceMixin:
         self._start_voice_judge()
 
     def _start_voice_judge(self):
+        if not self._in_conversation() or getattr(self, '_judge_running', False):
+            return
         pending = getattr(self, "_judge_pending", ())
         if not pending:
             self._judge_running = False
@@ -481,20 +456,23 @@ class VoiceMixin:
     def _judged(self, text, verdict, generation=None, prepared=None):
         if generation is not None and generation != getattr(self, "_judge_generation", 0):
             return
+        if not self._in_conversation():
+            self._note_heard(text)
+            return
         self._judge_running = False
-        self.root.after(0, self._start_voice_judge)
         to_myn, ends, elsewhere = verdict
         self._voice_trace("addressing", reason="to_myn" if to_myn else
                           "elsewhere" if elsewhere else "uncertain")
         if to_myn:
+            if ends:
+                # Clear older work first; this accepted farewell may still be answered once.
+                self._close_voice_conversation('farewell')
             self.conversation_touch = time.time()
             self._next_voice_preflight = prepared
             try:
                 self._addressed(text, heard=True)
             finally:
                 self._next_voice_preflight = None
-            if ends:  # Answer a farewell, then close the conversation.
-                self.conversation_open = False
         else:
             vocal = (prepared or {}).get('decision', {}).get('vocal') or {}
             if (vocal.get('activity') in ('singing', 'humming') and vocal.get('certainty') == 'clear'
@@ -509,8 +487,13 @@ class VoiceMixin:
             # Clearly meant for someone else (or a video): the conversation is over
             # until the wake word is heard again. Unclear bits just don't get a reply.
             if elsewhere or ends:
-                self.conversation_open = False
+                self._close_voice_conversation('other_party' if elsewhere else 'farewell')
+                self.interrupt_speech()
             self._note_heard(text)
+        if self.conversation_open:
+            generation = getattr(self, '_judge_generation', 0)
+            self.root.after(0, lambda: self._start_voice_judge()
+                            if generation == getattr(self, '_judge_generation', 0) else None)
 
     def _note_heard(self, text):
         """Keep what was heard (no reply) and let the memory queue classify it."""
@@ -547,8 +530,8 @@ class VoiceMixin:
 
     def _addressed(self, text, heard=False):
         """Speech meant for MYN: a local command, or a message that gets a reply.
-        heard: no wake word on it (judged, or said right after MYN's answer) - if the model
-        sees it was for someone else after all, MYN stays silent (silence.py)."""
+        heard: an automatically captured utterance already judged to address MYN.
+        The reply path retains its own final silence guard."""
         self.conversation_touch = time.time()
         self._voice_attention()
         self._voice_trace("addressed", chars=len(text))
@@ -721,10 +704,11 @@ class VoiceMixin:
             self._set_voice_label('I could not hear clearly. Please try again', clear_after=1800)
             return
         self._set_voice_label("")
+        # Holding the button authorizes one request, not a hands-free session.
+        certain = stt.exact_wake(text, self.stt_settings.all_wake_words)
         text = stt.show_wake(text, self.stt_settings.all_wake_words)
-        # Talking to MYN with the button opens a conversation, as the wake word does.
-        self.conversation_open = True
-        self.conversation_touch = time.time()
+        if certain:
+            self._open_voice_conversation(time.time(), time.time())
         # Push-to-talk is always addressed to MYN; a leading wake word is just dropped.
         rest = stt.strip_wake(text, self.stt_settings.all_wake_words)
         text = rest if rest else text
@@ -742,9 +726,7 @@ class VoiceMixin:
         self.send()
 
     def open_wake_training(self, wake_words, parent=None):
-        """Siri-style wake-word training: say the wake word a few times. How it SOUNDS
-        becomes voice samples, so MYN wakes when you say it (whatever speech recognition
-        makes of it); how it was written down is kept as extra wake-word forms too."""
+        """Collect wake-word voice samples; a recognized wake phrase is still required."""
         wake_words = stt.DEFAULT_WAKE_WORDS
         name = 'Hey，Mine'
         if self.web_active and self.web is not None:
@@ -759,7 +741,7 @@ class VoiceMixin:
         frame.pack(fill=tk.BOTH, expand=True)
         ttk.Label(frame, text='Hold the button below (or right Ctrl), say "%s" naturally, then release.\n'
                               'Repeat at least %d times (ideally 5), from your usual position and at your normal volume. '
-                              'MYN can then wake to your voice.' % (name, stt.WAKE_VOICE_MIN),
+                              'MYN still requires a recognized wake phrase to start voice chat.' % (name, stt.WAKE_VOICE_MIN),
                   wraplength=420, justify=tk.LEFT).pack(anchor="w")
         hold = tk.Button(frame, text='Hold and say "%s"' % name, font=(self.font_family, 11),
                          bg="#16677e", fg="#e8fbff", activebackground="#2186a0", relief=tk.FLAT,
@@ -890,8 +872,7 @@ class VoiceMixin:
                 self._reload_wake_profile()
             self.root.after(31000, self._finish_wake_learning)
             if trial.pending and trial.pending.get('rejected'):
-                self.awaiting_until = 0.0
-                self.conversation_open = False
+                self._close_voice_conversation('wake_rejected')
         except (ValueError, OSError, stt.STTError):
             self._set_voice_label('Could not save wake features. Existing samples were preserved', clear_after=3000)
 
@@ -994,7 +975,7 @@ class VoiceMixin:
         """How a new reply is said as it streams: only the opening of a long one (setting)."""
         return tts.SpokenOpening(whole=self.tts_settings.long_reply == "all")
 
-    def speak(self, text, opening_only=False, purpose="reply"):
+    def speak(self, text, opening_only=False, purpose="reply", then=None):
         if not self._speech_allowed(purpose):
             return  # suppressed background speech must not cancel a ringing alarm
         self.stop_speech()
@@ -1010,6 +991,8 @@ class VoiceMixin:
         # Same sentence-by-sentence path as streamed replies: the first clause starts
         # playing early, and stopping never has to kill the local model.
         self._stream_speak(tts.split_first(tts.speech_segments(cleaned)), purpose=purpose)
+        if then and self.speech_queue is not None:  # bedtime briefing after the good-night reply
+            self._stream_speak(tts.speech_segments(tts.speech_text(then)), purpose=purpose)
         if self.speech_queue is not None:  # no more sentences for this request
             self.speech_queue.put(None)
             self.speech_queue = None
@@ -1065,6 +1048,7 @@ class VoiceMixin:
             self.session.pending_images = images
         heard = bool(self.send_heard)
         self.busy = True
+        self._voice_turn_active = bool(getattr(self, '_sending_voice', False))
         import uuid
         origins = getattr(self, "_voice_origins", {}).get(raw, [])
         self._reply_latency = ({"end": origins.pop(0), "turn": uuid.uuid4().hex[:12]}

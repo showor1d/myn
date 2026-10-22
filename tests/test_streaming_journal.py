@@ -182,6 +182,9 @@ class Journal(unittest.TestCase):
         window.session=self.session
         window.hear('麦恩，帮我看看', capture_id='duplicate0001')
         window.hear('麦恩，帮我看看', capture_id='duplicate0001')
+        window._judge_heard.assert_called_once_with('帮我看看')
+        self.assertEqual(window.addressed, [])
+        window._judged('帮我看看', (True, False, False), window._judge_generation)
         self.assertEqual(len(window.addressed),1)
         self.assertEqual(len(conversation_log.list_messages(self.db)),1)
 

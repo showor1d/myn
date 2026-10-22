@@ -71,7 +71,7 @@ class VoicePanel(Panel):
              "text": self.output_error or 'Choose output and input devices independently, such as speakers for playback and a headset microphone for recording.'},
             {"t": "row", "children": [
                 {"t": "select", "id": "provider", "label": 'Speech service', "value": self.v("provider", current.provider),
-                 "options": [["elevenlabs", 'ElevenLabs (cloud)'], ["qwen3-local", 'Qwen3-TTS (local)']]},
+                 "options": [["elevenlabs", 'ElevenLabs (cloud)']]},
                 {"t": "select", "id": "eleven_model", "label": 'ElevenLabs model',
                  "value": self.v("eleven_model", current.eleven_model),
                  "options": [[code, tts.ELEVEN_MODEL_LABELS[code]] for code in tts.ELEVEN_MODELS]}]},
@@ -80,8 +80,6 @@ class VoicePanel(Panel):
                  "value": self.v("voice_id", current.voice_id)},
                 {"t": "field", "id": "voice_id_zh", "label": 'Chinese voice ID (optional; leave blank to use the default)',
                  "value": self.v("voice_id_zh", current.voice_id_zh)}]},
-            {"t": "select", "id": "local_speaker", "label": 'Qwen3 local voice', "value": self.v("local_speaker", current.local_speaker),
-             "options": [[name, name] for name in tts.LOCAL_SPEAKERS]},
             {"t": "row", "children": [
                 {"t": "slider", "id": "volume", "label": 'Volume (applies immediately)', "min": 0, "max": 100,
                  "value": int(round(float(self.v("volume", current.volume * 100)))), "unit": "%", "on": "volume"},
@@ -216,7 +214,7 @@ class WakeTrainingPanel(Panel):
             progress = 'Voice wake: %s' % ('%d samples saved. Updates do not require re-recording; you can add more' % saved if saved else 'No personal features yet. You can still say Hey, Mine to wake MYN')
         return [
             {"t": "p", "text": 'Hold the button below (or right Ctrl), say "%s" naturally, then release. Repeat at least %d times (ideally 5), '
-                               'from your usual position and at your normal volume; MYN can then wake to your voice.' % (self.name, stt.WAKE_VOICE_MIN)},
+                               'from your usual position and at your normal volume. Voice chat still requires a recognized wake phrase.' % (self.name, stt.WAKE_VOICE_MIN)},
             {"t": "buttons", "items": [{"press": "press", "release": "release", "label": 'Hold and say "%s"' % self.name,
                                         "kind": "primary"}]},
             {"t": "h", "text": progress},

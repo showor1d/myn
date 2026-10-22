@@ -28,6 +28,8 @@
 .receipt-row span:last-child { flex-shrink:0; font-variant-numeric:tabular-nums; }
 .receipt-column-head,.receipt-small,.receipt-token { font-size:10px; color:#72766b; }
 .receipt-entry { margin:12px 0; }
+.receipt-use-category { margin:18px 0 6px; padding-top:8px; border-top:1px dashed #85877b; font-size:11px; font-weight:600; }
+.receipt-token { overflow-wrap:anywhere; white-space:normal; }
 .receipt-total { font-weight:bold; font-size:16px; }
 .receipt-footnote { font-size:10px; color:#73766c; margin:13px 0; overflow-wrap:anywhere; }
 .receipt-end { text-align:center; font-size:10px; letter-spacing:.12em; margin-top:18px; }

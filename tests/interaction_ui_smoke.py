@@ -3,7 +3,7 @@ import os
 import sys
 import tempfile
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from pathlib import Path
 from unittest import mock
 
@@ -72,18 +72,72 @@ def main():
                 pump(lambda: not win.busy)
 
             try:
+                # Reproduce the idle-mode false courtesy capture before any real turn.
+                import sqlite3
+                win.always_on_active = True
+                now = time.time()
+                with mock.patch.object(win, '_addressed') as addressed, \
+                        mock.patch.object(win, '_judge_heard') as judged:
+                    win._heard(dict(event='heard', text='Thank you.', start=now - 2.5,
+                                    end=now - .1, capture_id='courtesyincident0001',
+                                    wake_voice=True, after_wake=.96, language='en'))
+                    addressed.assert_not_called()
+                    judged.assert_not_called()
+                assert not win.conversation_open and not spoken
+                with closing(sqlite3.connect(str(database))) as db:
+                    assert db.execute('SELECT addressed FROM speech_captures WHERE capture_id=?',
+                                      ('courtesyincident0001',)).fetchone() == (0,)
+                print('PASS: idle false courtesy capture stays unconfirmed with no conversation, model judgment or audio.')
+                with mock.patch.object(win.session, '_key', return_value='synthetic'), \
+                        mock.patch.object(win.session, 'inspect_voice', return_value=((False, False, True), None)) as inspect, \
+                        mock.patch.object(win, '_addressed') as addressed:
+                    win._heard(dict(event='heard', text='I wish you could see this move.',
+                                    start=time.time()-.3, end=time.time(), wake_voice=True))
+                    inspect.assert_not_called()
+                    win._heard(dict(event='heard', text='Hey Mine', start=time.time()-.3, end=time.time()))
+                    assert win.conversation_open
+                    generation = win._judge_generation
+                    win._heard(dict(event='heard', text='John, pass me the bowl', start=time.time(), end=time.time()))
+                    pump(lambda: not win.conversation_open)
+                    inspect.assert_called_once()
+                    addressed.assert_not_called()
+                    win.events.put(('judged', 'obsolete approval', (True, False, False), generation, None))
+                    pump(lambda: win.events.empty())
+                    addressed.assert_not_called()
+                    assert not win.awaiting_until and not win._judge_pending
+                print('PASS: acoustic candidate stays quiet; exact wake opens; other-party judgment closes; late result cannot act.')
                 send("我要睡觉了")
                 assert interaction.load(config)["mode"] == "sleep", win.transcript.get("1.0", "end")
-                assert not spoken
+                pump(lambda: bool(spoken))
+                assert win._speech_allowed("reply")
+                assert not win._speech_allowed("proactive")
+                import json
+                import claude_client
+                sleep_question = 'Can you answer quietly?'
+                sleep_decision = dict(mode='sleep', scope='keep', certainty='clear', evidence=sleep_question,
+                                      reason='Direct question after explicit wake',
+                                      addressing=dict(to_myn=True, ends=False, elsewhere=False))
+                with mock.patch.object(win.session, '_key', return_value='synthetic'), \
+                        mock.patch.object(claude_client, 'send', return_value=json.dumps(sleep_decision)) as classify, \
+                        mock.patch.object(claude_client, 'coordinated_reply', return_value='Yes, I can answer quietly.'):
+                    win._heard(dict(event='heard', text='Hey Mine', start=time.time()-.3, end=time.time()))
+                    win._heard(dict(event='heard', text=sleep_question, start=time.time(), end=time.time()))
+                    pump(lambda: not win.busy and 'Yes, I can answer quietly.' in win.transcript.get('1.0', 'end'))
+                    pump(lambda: any('answer quietly' in text for text in spoken))
+                    assert win.conversation_open and interaction.load(config)['mode'] == 'sleep'
+                    assert classify.call_count == 1, 'Preflight judgment should be reused'
+                win._close_voice_conversation('smoke_complete')
+                print('PASS: exact wake during sleep survives scene refresh, speaks the direct answer and reuses one judgment.')
+                sleep_reply_count = len(spoken)
                 point, _ = evolution.add(config, "夜间不打扰", request="睡觉不要打扰")
                 evolution.update(config, point["id"], status="proposed",
                                  plan={"summary": "用场景保护", "plan": "这里是完整方案"})
                 win._evolution_announce(config)
-                assert not spoken
+                assert len(spoken) == sleep_reply_count
                 import alarm_ringing
                 ring = alarm_ringing.activate(config, "schedule:isolated-alarm", "test", "早上八点，该起床了")
                 win._queue_task({"id": "isolated-alarm", "kind": "say", "text": "早上八点，该起床了"})
-                pump(lambda: bool(spoken))
+                pump(lambda: any("起床" in text for text in spoken))
                 assert "起床" in "".join(spoken)
                 assert interaction.load(config)["mode"] == "sleep"
                 pump(lambda: win._ring_waiting_since == 0)
@@ -96,6 +150,8 @@ def main():
                 win.always_on_active = True
                 win.conversation_open = False
                 win._heard({"event": "heard", "text": "关闭闹钟", "start": time.time(), "end": time.time()})
+                assert alarm_ringing.active(config), 'Background words must not dismiss an alarm'
+                win._voice_text("关闭闹钟")  # deliberate one-shot microphone-button input
                 pump(lambda: not win.busy and not alarm_ringing.active(config))
                 win.always_on_active = False
                 assert not alarm_ringing.active(config)
@@ -156,7 +212,11 @@ def main():
                     win.awaiting_until = 0
                     win.conversation_open = False
                     win._heard({"event": "heard", "text": phrase,
-                                "start": time.time() + 1, "end": time.time() + 2})
+                                "start": time.time() - .2, "end": time.time() - .1})
+                    assert evolution.get(config, point['id'])['status'] == 'proposed'
+                    win._heard(dict(event='heard', text='Hey Mine', start=time.time()-.2, end=time.time()))
+                    win._heard({"event": "heard", "text": phrase,
+                                "start": time.time() - .1, "end": time.time()})
                     pump(lambda: not win.busy and evolution.get(config, point["id"])["status"] == "rejected")
                     general.assert_not_called()
                 win.always_on_active = False
@@ -244,16 +304,17 @@ def main():
                                           original_prepare(c, r, datetime(2026, 10, 20, 23, tzinfo=agenda.TOKYO))):
                     send(phrase)
                     pump(lambda: "Before you sleep" in "".join(spoken))
-                    token = win.tts_purpose
-                    assert token.startswith("bedtime:")
-                    assert win._speech_allowed(token)
+                    joined = "".join(spoken)
+                    assert "晚安" in joined and joined.rindex("晚安") < joined.index("Before you sleep")
+                    assert win.tts_purpose == "reply"
                     assert not win._speech_allowed("proactive")
                     assert win._speech_allowed("alarm")
                     before = win.transcript.get("1.0", "end").count("Before you sleep")
+                    count = "".join(spoken).count("Before you sleep")
                     send(phrase)
                     assert win.transcript.get("1.0", "end").count("Before you sleep") == before
-                    assert not win._speech_allowed(token)
-                print("PASS: semantic calendar close; actual bedtime result -> GUI -> speech queue once, ordinary sleep remains quiet.")
+                    assert "".join(spoken).count("Before you sleep") == count
+                print("PASS: semantic calendar close; spoken good night then bedtime briefing once; background speech stays quiet in sleep.")
                 import singing
                 interaction.observe(config, '我醒了')
                 win.always_on_active = True

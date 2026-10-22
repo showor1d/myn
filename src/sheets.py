@@ -161,6 +161,14 @@ class SheetHost:
                    "danger": danger})
         return ident
 
+    def notice(self, title, body, closed):
+        """One dismissible, read-only receipt; no approval or action is requested."""
+        ident = next(self._ids)
+        self._answers[ident] = lambda _value: closed()
+        self.send({"cmd": "sheet_confirm", "id": ident, "title": title,
+                   "body": body, "notice": True, "yes": "Close", "width": 760})
+        return ident
+
     def ask_and_wait(self, text, title='MYN needs your approval', yes='Allow', no='Decline', timeout=None):
         """From another thread: ask in the page and wait for the answer (False if none)."""
         done = threading.Event()

@@ -13,11 +13,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PROGRAM = ("src", "tests", "AGENTS.md")
+PROGRAM = ("src", "tests", "AGENTS.md", "tools/dev_finish.py")
 SKIP = ("__pycache__", "*.pyc", "*.pyo")
 # MYN may not change these itself: the safety net, keys, where personal data lives,
 # backups, and the background-task worker that does the fixing.
 PROTECTED = {
+    "src/core/runtime_paths.py", "src/first_run.py", "src/install_components.py", "src/component-lock.json",
+    "src/core/development_cleanup.py",
+    "src/core/self_test_runner.py", "tools/dev_finish.py",
     "src/core/self_update.py", "src/core/credentials.py", "src/data_location.py",
     "src/core/backup.py", "src/core/agent_worker.py", "src/core/agent_client.py",
     "src/core/personal_profile.py", "src/version.py",
@@ -75,6 +78,8 @@ def prepare(task_id, root=None):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", str(task_id)):
         raise ValueError("Invalid self-evolution task id")
     work = state_dir(root) / "work" / task_id
+    import development_cleanup
+    development_cleanup.cancel_reused_copy(work, root)
     if work.exists():
         shutil.rmtree(work)
     for part in PROGRAM:
@@ -227,33 +232,65 @@ def diff_summary(work, root=None, limit=60):
 
 # ---- tests --------------------------------------------------------------------------
 
+class TestFailures(set):
+    """Failure IDs plus host-collected execution evidence, including successful runs."""
+    def __init__(self, values=(), report=None):
+        super().__init__(values)
+        self.report = report or {}
+
+
 def run_tests(base, python=None, timeout=900):
     """Run the unit tests of a program copy. Returns (failing test ids, output tail).
     Personal data folders point at an empty temporary place."""
     import tempfile
-    python = python or sys.executable
+    python = str(python or sys.executable).replace("pythonw.exe", "python.exe")
     with tempfile.TemporaryDirectory(prefix="myn-selftest-") as scratch:
-        env = dict(os.environ, MYN_PERSONAL_DATA_DIR=str(Path(scratch) / "p"),
+        env = dict({k: v for k, v in os.environ.items() if not k.upper().startswith("MYN_")},
+                   MYN_PERSONAL_DATA_DIR=str(Path(scratch) / "p"),
                    MYN_DATA_DIR=str(Path(scratch) / "p" / "database"),
                    MYN_LEGACY_DATA_DIR=str(Path(scratch) / "l"), MYN_CONFIG_DIR=str(Path(scratch) / "c"),
                    PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1")
         env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("ELEVENLABS_API_KEY", None)
+        report_path = Path(scratch) / "results.json"
         try:
-            result = subprocess.run([str(python), "-m", "unittest", "discover", "-s", "tests"],
+            result = subprocess.run([python, "-B", str(Path(__file__).with_name("self_test_runner.py")),
+                                     str(Path(base).resolve()), str(report_path)],
                                     cwd=str(base), env=env, capture_output=True, text=True,
                                     encoding="utf-8", errors="replace", timeout=timeout,
                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             output = result.stdout + result.stderr
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            if not report.get("complete") or not report.get("ran"):
+                return TestFailures({'(Tests unavailable)'}, report), output[-6000:]
         except subprocess.TimeoutExpired:
-            return {'(Test timeout)'}, 'Tests did not finish within %d seconds.' % timeout
-    failing = set(re.findall(r"^(?:FAIL|ERROR): (\S+ \([^)]*\))", output, re.M))
+            return TestFailures({'(Test timeout)'}), 'Tests did not finish within %d seconds.' % timeout
+        except (OSError, ValueError, AttributeError) as error:
+            return TestFailures({'(Tests unavailable)'}), 'Test execution evidence unavailable: %s' % type(error).__name__
+    failing = TestFailures(report.get("failures", []), report)
     if not failing and (result.returncode != 0 or not re.search(r"^OK(?:\s|$)", output, re.M)):
         failing.add('(Tests unavailable)')
     return failing, output[-6000:]
 
 
 def new_failures(baseline, after):
-    return sorted(set(after) - set(baseline))
+    broken = set(after) - set(baseline)
+    broken.update(item for item in set(baseline) | set(after) if item.startswith("(Test"))
+    before_report, after_report = getattr(baseline, "report", {}), getattr(after, "report", {})
+    if before_report and after_report:
+        missing = set(before_report.get("tests", [])) - set(after_report.get("tests", []))
+        skipped = (set(after_report.get("skipped", [])) - set(before_report.get("skipped", []))) & set(before_report.get("tests", []))
+        broken.update('Test removed or renamed: ' + name for name in missing)
+        broken.update('Existing test newly skipped: ' + name for name in skipped)
+    return sorted(broken)
+
+
+def verification_summary(baseline, after):
+    report = getattr(after, "report", {})
+    return {"executed": bool(report.get("complete")), "ran": report.get("ran", 0),
+            "skipped": len(report.get("skipped", [])), "failed": len(after),
+            "baseline_failed": len(baseline), "accepted": not new_failures(baseline, after),
+            "live_audio_checked": False, "checked_at": datetime.now(timezone.utc).isoformat()}
 
 
 # ---- applying, restarting, rolling back ---------------------------------------------------
@@ -303,7 +340,7 @@ def apply(work, summary, root=None, checker=self_check, point_id=None):
         if source.is_dir():
             shutil.copytree(source, backup / part, ignore=shutil.ignore_patterns(*SKIP))
         elif source.is_file():
-            backup.mkdir(parents=True, exist_ok=True)
+            (backup / part).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, backup / part)
     # Recheck after the potentially slow backup; preserve edits made while copying it.
     clashes = conflicts(work, root)
@@ -331,6 +368,11 @@ def apply(work, summary, root=None, checker=self_check, point_id=None):
         return False, 'The new version could not start. The previous version was restored.\n' + output[-500:]
     pending.update(boots=0, phase="ready")
     _write_pending(root, pending)
+    try:
+        import development_cleanup
+        development_cleanup.schedule(work, backup, root)
+    except (OSError, ValueError):
+        _log(root, {"result": "cleanup_registration_deferred", "point_id": point_id})
     return True, str(backup)
 
 
@@ -476,8 +518,8 @@ def prompt_for(problem, work, rules, notes=""):
     return (
         "You are MYN, updating your own program to complete the user's requested changes. The working directory is a copy of MYN "
         '(src contains Python 3.9 and Tk source, tests contains unit tests, and AGENTS.md contains current documentation and rules). Edit only this copy. '
-        'Run commands inside the copy to verify changes, for example "' + sys.executable.replace("pythonw.exe", "python.exe") +
-        '" -m unittest discover -s tests (MYN data paths point to temporary folders, away from real data). '
+        'Run commands inside the copy to verify changes. In PowerShell use & "' + sys.executable.replace("pythonw.exe", "python.exe") +
+        '" -B -m unittest discover -s tests (MYN data paths point to temporary folders, away from real data). '
         'Commands using paths outside the copy are rejected. MYN runs the full suite again after you finish.\n\n'
         'User-reported problem:\n' + problem.strip() + "\n\n" +
         (('Additional information:\n' + notes.strip() + "\n\n") if notes.strip() else "") +
@@ -485,8 +527,12 @@ def prompt_for(problem, work, rules, notes=""):
         '1. Read the relevant AGENTS.md sections and source, find the actual cause, and make the smallest direct fix.\n'
         '2. Remain compatible with Python 3.9; add no dependencies requiring installation.\n'
         '3. Do not edit protected files: ' + "、".join(sorted(PROTECTED)) + '. Do not delete files or tests, '
-        'and do not weaken tests to make them pass.\n'
+        'and do not weaken, rename or skip existing tests to make them pass. Host verification compares executed test IDs and skips. '
+        'tools/dev_finish.py is included for test imports only; do not execute it from the copy.\n'
         '4. Add a focused regression test when applicable, using temporary folders under tests/ and never real data.\n'
+        'Reproduce the reported failure before fixing it, inspect callers and delayed callbacks, and test opposite cases. '
+        'For speech, check direct requests, weak wakes, background transcription, echoes, quiet scenes, alarms and interruptions. '
+        'When a tool refuses a test command, report the exact tool and reason; do not claim that tests passed.\n'
         '5. Update existing feature documentation and verification records in AGENTS.md; do not append version entries or sections. '
         'Record actual changes and test results briefly, disclose unperformed live-device checks, and preserve permanent constraints verbatim.\n'
         'Plan adoption authorizes backup, deployment and restart after tests pass. The main program performs those steps; do not deploy from the working copy.\n'

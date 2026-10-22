@@ -89,7 +89,9 @@ def ensure_layout(root=None):
 
 
 def legacy_data_dir():
-    return Path(os.environ.get("MYN_LEGACY_DATA_DIR") or r"D:\MYN\data")
+    root = Path(__file__).resolve().parent.parent
+    default = root / 'data' if (root / 'runtime/main/python.exe').is_file() else Path(r'D:\MYN\data')
+    return Path(os.environ.get("MYN_LEGACY_DATA_DIR") or default)
 
 
 def legacy_candidates(target_dir):

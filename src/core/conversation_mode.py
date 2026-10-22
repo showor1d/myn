@@ -5,7 +5,7 @@ import re
 
 import claude_client
 
-IDLE_SECONDS = 120  # the conversation closes after this long without an exchange
+IDLE_SECONDS = 30  # the conversation closes after this long without an exchange
 RECENT_TURNS = 6
 from assistant_intent import VOICE_NOTE
 
@@ -17,6 +17,8 @@ JUDGE_SYSTEM = (
     "Singing, humming, lyrics and quoted dialogue are not addressed to MYN, even if they contain thanks, questions or the assistant's name. "
     'Use context; lyrics after a reply are not automatically an answer. Handle explicit requests to change volume, switch songs or evaluate singing.\n'
     'Use recent conversation and the new sentence to judge whether it addresses MYN.\n'
+    'Proximity to the last reply, a pending proposal or an alarm is not proof of addressing. '
+    'Stay uncertain when context does not establish the addressee; never infer consent from background speech.\n'
     'Return true for answers to MYN, follow-up questions or details, feedback or responses '
     '(such as agreement, corrections or requests for more detail), and clear new requests to the assistant.\n'
     'Speech recognition may render MYN as Maya, Maia or a Chinese phonetic equivalent. A request addressed to such a name counts as addressing MYN.\n'

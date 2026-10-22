@@ -315,9 +315,14 @@ window.usageReceipt = function (data, act = () => {}) {
     paper.append(smile, node("p", "receipt-empty", "No spending this period"),
       node("p", "receipt-zero-message", "Nicely done!"));
   } else if (!data.rows.length) paper.append(node("p", "receipt-empty", "No usage records this period"));
+  let usageCategory = null;
   for (const item of data.rows) {
+    if (item.usage_category && item.usage_category !== usageCategory) {
+      usageCategory = item.usage_category;
+      paper.appendChild(node("div", "receipt-use-category", usageCategory));
+    }
     const entry = node("div", "receipt-entry");
-    entry.append(row(item.name, item.cost), node("div", "receipt-token", expense ? item.detail : item.tokens + " Token"));
+    entry.append(row(item.name, item.cost), node("div", "receipt-token", item.detail || (expense ? "" : item.tokens + " Token")));
     paper.appendChild(entry);
   }
   paper.append(node("div", "receipt-rule"), row("TOTAL", data.cost, "receipt-total"));

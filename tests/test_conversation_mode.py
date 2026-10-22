@@ -69,7 +69,7 @@ class ConversationModeChecks(unittest.TestCase):
         self.assertEqual(conversation_mode.judge("k", [], "在吗", sender=no_haiku), (True, False, False))
         self.assertEqual(tried, [(claude_client.OPUS, {"type": "disabled"})])
         self.assertIn("elsewhere", conversation_mode.JUDGE_SYSTEM)
-        self.assertGreaterEqual(conversation_mode.IDLE_SECONDS, 120)
+        self.assertEqual(conversation_mode.IDLE_SECONDS, 30)
 
 
 if __name__ == "__main__":

@@ -82,7 +82,8 @@ def load_settings(data_dir):
         raw = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError()
-        raw.update(auto_read=True, long_reply='opening')
+        # Local synthesis is retired; retain old voice fields for backup compatibility.
+        raw.update(provider='elevenlabs', auto_read=True, long_reply='opening')
         return TTSSettings(**raw).validate()
     except (OSError, UnicodeError, ValueError, TypeError) as error:
         raise TTSError('Cannot read speech settings. Check tts-settings.json.') from error
@@ -90,7 +91,7 @@ def load_settings(data_dir):
 
 def save_settings(data_dir, settings):
     from dataclasses import replace
-    settings = replace(settings, auto_read=True, long_reply='opening')
+    settings = replace(settings, provider='elevenlabs', auto_read=True, long_reply='opening')
     settings.validate()
     folder = Path(data_dir)
     folder.mkdir(parents=True, exist_ok=True)

@@ -23,7 +23,7 @@ MYN starts it and talks JSON lines over stdin/stdout (UTF-8):
 
 Permissions (the user's levels, 2026-10-17; commands 2026-10-18 "the same as you"):
 looking (Read, Glob, Grep, WebSearch, WebFetch, the to-do list) runs directly; commands
-(Bash) run directly too, the way Claude Code runs them, except risky ones (risky_command:
+(Bash or PowerShell) run directly too, except risky ones (risky_command:
 deleting, system/registry/service/power changes, force-pushing, running downloaded code,
 touching MYN's personal data or keys) which come back as "ask" with the reason. Writing
 and editing files (Write, Edit, ...) and any read outside the granted folders come back to
@@ -41,13 +41,15 @@ import re
 import sys
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 READ_ONLY = ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"]
 NEVER = ["AskUserQuestion"]  # questions go in the final message instead
 # Plan mode reads MYN source without editing it.
 PLAN_TOOLS = ["Read", "Glob", "Grep"]
-PLAN_NEVER = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "WebFetch", "WebSearch", "TodoWrite"]
+COMMAND_TOOLS = {"Bash", "PowerShell"}
+PLAN_NEVER = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "PowerShell", "WebFetch", "WebSearch", "TodoWrite"]
 APPEND = (
     "You are working for MYN, the user's personal assistant on their Windows computer, as a "
     "background task. The user speaks Chinese; reply in their language. Work only inside the "
@@ -94,6 +96,8 @@ def risky_command(command, inside=None):
         if pattern.search(command):
             return reason
     if inside:
+        if re.search(r"\b(?:pip\d*|uv|conda|mamba|npm|pnpm|yarn|winget|choco|scoop)\b[^;&|\n]*\b(?:install|uninstall|add|update|upgrade|sync|ci)\b|\bensurepip\b|\bInstall-(?:Module|Package|Script)\b", command, re.I):
+            return 'Self-update cannot install dependencies; use installed libraries or report what is missing'
         root = os.path.normcase(os.path.normpath(str(inside)))
         # Running a program by its full path (python.exe, git.exe) is fine; what it is
         # pointed at must stay inside the copy.
@@ -163,7 +167,7 @@ def summarize(tool, data):
 def detail(tool, data):
     """More of a change for the approval dialog (what will be written / run)."""
     data = data if isinstance(data, dict) else {}
-    if tool == "Bash":
+    if tool in COMMAND_TOOLS:
         reason = data.get("_myn_reason")
         return (('Reason: %s\n' % reason) if reason else "") + str(data.get("description") or "")[:300]
     if tool == "Write":
@@ -209,6 +213,8 @@ class Worker:
         token_budget = request.get("token_budget")
         token_budget = token_budget if type(token_budget) is int and token_budget >= 0 else None
         usage_by_message = {}
+        call_details = {}
+        unidentified_calls = False
         observed_usage = {}
         quota_hit = False
 
@@ -217,7 +223,7 @@ class Worker:
                 return types.PermissionResultDeny(message="Only Read, Glob and Grep are available: "
                                                           "this is planning, nothing may be changed.")
             asked = input_data
-            if tool_name == "Bash":
+            if tool_name in COMMAND_TOOLS:
                 command = input_data.get("command") if isinstance(input_data, dict) else None
                 reason = risky_command(command, inside=cwd if self_fix else None)
                 if not reason:  # an ordinary command runs directly, as in Claude Code
@@ -232,6 +238,11 @@ class Worker:
             # Documented workaround: a PreToolUse hook keeps the stream open for can_use_tool.
             if quota_hit:
                 return {"continue_": False, "stopReason": "Monthly evolution token quota reached."}
+            if self_fix and input_data.get("tool_name") in COMMAND_TOOLS:
+                reason = risky_command((input_data.get("tool_input") or {}).get("command"), inside=cwd)
+                if reason:
+                    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                            "permissionDecisionReason": reason}}
             if planning and not planning_read_allowed(input_data.get("tool_name"),
                                                      input_data.get("tool_input"), cwd):
                 return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
@@ -261,7 +272,8 @@ class Worker:
             can_use_tool=can_use_tool, setting_sources=[],
             hooks={"PreToolUse": [types.HookMatcher(matcher=None, hooks=[keep_open])]}, **extra)
         done = {"event": "done", "task_id": task_id, "ok": False, "result": "", "cost_usd": None,
-                "turns": None, "error": "", "usage": {}, "model": request.get("model") or ""}
+                "turns": None, "error": "", "usage": {}, "model": "claude-opus-5-5",
+                "run_id": uuid.uuid4().hex}
         last_text = ""
         try:
             if token_budget == 0:
@@ -275,7 +287,24 @@ class Worker:
                     kind = type(message).__name__
                     if kind == "AssistantMessage":
                         usage = _usage_numbers(getattr(message, "usage", None))
-                        ident = getattr(message, "message_id", None) or getattr(message, "uuid", None)
+                        model_message_id = getattr(message, "message_id", None)
+                        ident = model_message_id or getattr(message, "uuid", None)
+                        if not model_message_id:
+                            unidentified_calls = True
+                        call_id = ident or "anonymous-%d" % len(call_details)
+                        detail_row = call_details.setdefault(call_id, {
+                            "id": str(call_id), "at_utc": datetime.now(timezone.utc).isoformat(),
+                            "identified": bool(model_message_id),
+                            "model": str(getattr(message, "model", None) or done["model"]),
+                            "usage": {}, "tools": []})
+                        for name, value in usage.items():
+                            if type(value) is int:
+                                detail_row["usage"][name] = max(detail_row["usage"].get(name, 0), value)
+                        for block in getattr(message, "content", []) or []:
+                            if type(block).__name__ == "ToolUseBlock":
+                                tool = str(getattr(block, "name", ""))[:60]
+                                if tool not in detail_row["tools"]:
+                                    detail_row["tools"].append(tool)
                         if usage:
                             ident = ident or "anonymous-%d" % len(usage_by_message)
                             previous = usage_by_message.setdefault(ident, {})
@@ -317,6 +346,11 @@ class Worker:
             done["result"] = last_text  # e.g. stopped by the cost cap right after answering
         if not done["usage"]:
             done["usage"] = observed_usage
+        done["usage_steps"] = list(call_details.values())
+        fields = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+        done["calls_complete"] = bool(call_details) and not unidentified_calls and all(
+            sum(row["usage"].get(name, 0) for row in call_details.values()) == done["usage"].get(name, 0)
+            for name in fields) and all(row["usage"] for row in call_details.values())
         if quota_hit:
             done.update(ok=False, error="evolution_quota")
         emit(done)

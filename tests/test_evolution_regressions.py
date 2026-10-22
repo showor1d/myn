@@ -303,9 +303,12 @@ class CopyRecovery(unittest.TestCase):
 
     def test_automatic_tests_override_inherited_database_path(self):
         import os
+        def completed(command, **kwargs):
+            Path(command[-1]).write_text(json.dumps({"complete": True, "ran": 1,
+                                                   "tests": ["test_isolated"], "skipped": [], "failures": []}))
+            return types.SimpleNamespace(stdout="OK\n", stderr="", returncode=0)
         with mock.patch.dict(os.environ, {"MYN_DATA_DIR": "must-not-use", "ANTHROPIC_API_KEY": "test-secret"}), \
-                mock.patch.object(self_update.subprocess, "run", return_value=types.SimpleNamespace(
-                    stdout="OK\n", stderr="", returncode=0)) as run:
+                mock.patch.object(self_update.subprocess, "run", side_effect=completed) as run:
             failures, _ = self_update.run_tests(self.root)
         env = run.call_args.kwargs["env"]
         self.assertNotEqual(env["MYN_DATA_DIR"], "must-not-use")

@@ -13,6 +13,7 @@ from gui_common import (
 )
 import evolution
 import interaction
+from datetime import datetime, timezone
 
 TICK_MS = 20000
 ANNOUNCE_GAP_S = 90      # At most one evolution announcement per interval.
@@ -27,6 +28,7 @@ class EvolutionMixin:
     evolution_error = ""       # the last problem, for myn_status
     evolution_applying = False
     _evolution_said_at = 0.0
+    _evolution_receipt_open = False
 
     def _evolution_config(self):
         return self._usage_config()
@@ -50,6 +52,39 @@ class EvolutionMixin:
 
     def _evolution_changed(self):
         self._evolution_cancel_obsolete()
+
+    def _evolution_receipts(self):
+        """Show once after confirmed restart (or failure), without speaking or approval."""
+        if (self._evolution_receipt_open or getattr(self, "busy", False) or
+                getattr(self, "backup_working", False)):
+            return
+        host = getattr(self, "sheets", None)
+        if host and (host.panel is not None or host._answers):
+            return
+        import evolution_receipt
+        config = self._evolution_config()
+        outcomes = self_update.evolution_results()
+        for point in evolution.points(config):
+            if not point.get("receipt_pending"):
+                continue
+            receipt = evolution_receipt.build(config, point, outcomes.get(point["id"], {}))
+            if receipt is None:
+                continue
+            self._evolution_receipt_open = True
+            def closed(point_id=point["id"], pending=point["receipt_pending"]):
+                self._evolution_receipt_open = False
+                current = evolution.get(config, point_id)
+                if current and current.get("receipt_pending") == pending:
+                    evolution.update(config, point_id, receipt_pending=False)
+            try:
+                if getattr(self, "web_active", False) and host:
+                    host.notice(receipt["title"], receipt["body"], closed)
+                else:
+                    self._evolution_receipt_window = evolution_receipt.show_tk(self.root, receipt, closed)
+            except Exception:
+                self._evolution_receipt_open = False
+                raise
+            return
 
     def _evolution_cancel_obsolete(self):
         check = getattr(self, "_agent_budget_check", None)
@@ -82,6 +117,7 @@ class EvolutionMixin:
         config = self._evolution_config()
         try:
             self._evolution_cancel_obsolete()
+            self._evolution_receipts()
             self._background_notice_ready()
             self._evolution_announce(config)
             self._evolution_work(config)
@@ -196,7 +232,8 @@ class EvolutionMixin:
     # ---- building: the self-evolution run on a copy --------------------------------------------------
     def _evolution_build(self, point):
         config = self._evolution_config()
-        evolution.update(config, point["id"], 'Starting development', status="building")
+        evolution.update(config, point["id"], 'Starting development', status="building",
+                         receipt_pending=str(time.time_ns()), receipt_requested_at=datetime.now(timezone.utc).isoformat())
         try:
             self._start_self_fix(evolution.build_problem(point), point_id=point["id"])
         except Exception as error:
@@ -212,8 +249,9 @@ class EvolutionMixin:
             self.self_fix = None
             self._evolution_changed()
             return
-        evolution.update(config, fix["point"], 'Implemented; all tests passed', status="built", work=str(fix["work"]),
-                         result=fix["summary"][:2000], changed=changed[:40], announced="")
+        evolution.update(config, fix["point"], 'Implementation passed host verification', status="built", work=str(fix["work"]),
+                         result=fix["summary"][:2000], changed=changed[:40], announced="",
+                         verification=fix.get("verification", {}))
         self.self_fix = None
         self._evolution_changed()
         self._evolution_auto_update(config)
@@ -239,7 +277,7 @@ class EvolutionMixin:
         if point is None or point["status"] != "building":
             return
         evolution.update(self._evolution_config(), fix["point"], 'Could not complete: %s' % reason[:120], status="failed",
-                         reason=reason[:500])
+                         reason=reason[:500], verification=fix.get("verification", {}))
         self._evolution_changed()
 
     # ---- telling the user ---------------------------------------------------------------------------
@@ -274,8 +312,7 @@ class EvolutionMixin:
         self._evolution_said_at = time.time()
         self.append("MYN", spoken, speakable=True, spoken_text=spoken)
         self.speak(spoken, purpose="proactive")
-        self.conversation_open = True
-        self.conversation_touch = self.last_answer_at = time.time()
+        # A notification does not authorize microphone conversation or spoken consent.
         self._evolution_changed()
 
     def _evolution_ask_update(self, point):
@@ -302,7 +339,9 @@ class EvolutionMixin:
         if self._evolution_busy():
             self.append("MYN", 'A background task is running. Wait for it to finish before applying "%s".' % point["title"])
             return
-        evolution.update(config, point_id, 'Starting update', status="updating")
+        evolution.update(config, point_id, 'Starting update', status="updating",
+                         receipt_pending=point.get("receipt_pending") or str(time.time_ns()),
+                         receipt_requested_at=point.get("receipt_requested_at") or datetime.now(timezone.utc).isoformat())
         self.evolution_applying = True
         self._set_voice_label('Updating...', clear_after=20000)
         work = point["work"]
@@ -333,10 +372,10 @@ class EvolutionMixin:
     def _evolution_applied(self, point_id, work, ok, detail):
         self.evolution_applying = False
         config = self._evolution_config()
-        self._self_fix_discard({"work": work})
+        self._self_fix_discard({"work": work}, keep_work=True)
         if not ok:
             evolution.update(config, point_id, 'Update failed: %s' % detail[:120], status="failed", reason=detail[:500],
-                             work=None)
+                             work=str(work))
             self.append("MYN", 'Could not apply the evolution point: %s\n\nThe running version is unchanged.' % detail[:600])
             self._evolution_changed()
             return

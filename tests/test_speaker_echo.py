@@ -20,6 +20,8 @@ class SpeakerEcho(unittest.TestCase):
         window.tts_settings.output_device = "Speakers (花再 Halo PixelBar)"
         window.stt_settings = stt.STTSettings(device="Microphone (HyperX Cloud III Wireless)")
         window._quick_barge = lambda: WebViewMixin._quick_barge(window)
+        window.conversation_open = True
+        window.conversation_touch = time.time()
         window.last_speaking = time.time()
         window.recent_speech = [(time.time(), "今天东京天气晴朗，下午可能有阵雨，出门记得带伞。")]
         window._note_heard = Mock()
@@ -51,8 +53,8 @@ class SpeakerEcho(unittest.TestCase):
             with self.subTest(text=text):
                 window = self.window()
                 window.hear(text)
-                self.assertEqual(window.addressed, [(text, True)])
-                self.assertEqual(window.last_barge, 'Interrupted and answered')
+                self.assertEqual(window.addressed, [])
+                window._judge_heard.assert_called_once_with(text)
 
     def test_spoken_wake_word_cannot_wake_itself(self):
         window = self.window()
@@ -71,13 +73,15 @@ class SpeakerEcho(unittest.TestCase):
         window.conversation_open = True
         window.conversation_touch = time.time()
         window.hear("不要了", start=time.time()-.1)
-        self.assertEqual(window.addressed, [("不要了", True)])
+        self.assertEqual(window.addressed, [])
+        window._judge_heard.assert_called_once_with("不要了")
 
     def test_unspoken_reader_text_is_not_echo_and_old_echo_does_not_block(self):
         window = self.window()
         window._messages = lambda: [("myn", "你先解释一下第二题", None)]
         window.hear("你先解释一下第二题")
-        self.assertEqual(window.addressed, [("你先解释一下第二题", True)])
+        self.assertEqual(window.addressed, [])
+        window._judge_heard.assert_called_once_with("你先解释一下第二题")
         window.last_speaking = time.time()-10
         window.conversation_open = False
         window.hear("下午可能有阵雨，出门记得带伞")
