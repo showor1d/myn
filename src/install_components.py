@@ -58,7 +58,7 @@ def download(spec, target, report, opener=urllib.request.urlopen):
         return
     for attempt in range(3):
         offset = partial.stat().st_size if partial.exists() else 0
-        request = urllib.request.Request(spec['url'], headers={'User-Agent': 'MYN-Setup/0.50',
+        request = urllib.request.Request(spec['url'], headers={'User-Agent': 'MYN-Setup/1.0',
                           **({'Range': 'bytes=%d-' % offset} if offset else {})})
         try:
             with opener(request, timeout=60) as response:
@@ -160,7 +160,7 @@ def install(root, report):
         env=env, capture_output=True, timeout=120, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if check.returncode:
         raise ValueError('Speech components could not load. Run setup again to repair the installation.')
-    inside(root, 'installation-ready.json').write_text(json.dumps({'version': '0.50.0', 'ready': True}), encoding='utf-8')
+    inside(root, 'installation-ready.json').write_text(json.dumps({'version': '1.0', 'ready': True}), encoding='utf-8')
     report('MYN is ready. Open it to import your full backup.', 1)
 
 
