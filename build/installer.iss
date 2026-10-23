@@ -4,7 +4,7 @@
 #ifndef WebViewBootstrapper
   #error WebViewBootstrapper is required
 #endif
-#define MyVersion "0.50.0"
+#define MyVersion "1.0"
 
 [Setup]
 AppId={{2F5DBF08-7D4E-4B56-B6A2-60FC5C94F1AE}
@@ -18,7 +18,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
-OutputBaseFilename=MYN-Setup-0.50.0-x64
+OutputBaseFilename=MYN-Setup-1.0-x64
 Compression=lzma2/fast
 SolidCompression=yes
 LZMANumBlockThreads=4
@@ -29,7 +29,7 @@ SetupLogging=yes
 ExtraDiskSpaceRequired=12000000000
 SetupIconFile={#PayloadDir}\src\assets\myn-symbol.ico
 UninstallDisplayIcon={app}\MYN.exe
-VersionInfoVersion=0.50.0.0
+VersionInfoVersion=1.0.0.0
 VersionInfoDescription=MYN with private runtimes and backup restore
 #ifdef TestMode
 CreateUninstallRegKey=no
