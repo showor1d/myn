@@ -1,6 +1,6 @@
 # MYN: current features and development rules
 
-This is the maintained reference for source version **0.50.0**, deployed at `D:\MYN`. Verify behavior against current code and tests.
+This is the maintained reference for source version **1.0**, deployed at `D:\MYN`. Verify behavior against current code and tests.
 
 ## Documentation and language
 
@@ -118,6 +118,8 @@ The new MYN window captures existing cleanup registrations at startup, waits 26 
 Never commit or copy models, environments, private data, credentials or large media into working copies. Legacy brain-settings.json only supports migration and cannot enable local chat. Old backups do not describe current features.
 
 ## Git and GitHub
+
+The v1.0 functional baseline is the public GitHub main commit `89b4c871cfed6868d40ab3c00fea3166a80e4a26`. The v1.0 release changes version metadata and rebuilds the installer from that baseline. Future releases continue from v1.0; do not revert to the earlier 0.x numbering. Preserve local unpublished changes when updating version metadata.
 
 `D:\MYN` uses Git on `main`. The English source baseline is its first version. `origin` points to the public [showor1d/myn](https://github.com/showor1d/myn), URL `https://github.com/showor1d/myn.git`. Commits and uploads are separate. Review before requested pushes; never expand public tracking to private data. Repository-only identity is `MYN Local Development <myn@localhost.invalid>`; do not change global identity.
 
